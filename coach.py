@@ -1,20 +1,21 @@
 """
-Stage 3: AI Coach — OpenAI LLM wrapper with tool-use (function-calling).
+Stage 3: AI Coach — Gemini LLM wrapper with tool-use (function-calling).
 
 Architecture:
     User query (natural language)
-      -> OpenAI chat completion with tool definitions
+      -> Gemini chat completion with tool definitions
       -> LLM decides which tools to call
       -> Tools execute pipeline stages (preprocess, PCSP gen, PAT)
       -> LLM synthesizes results into coaching advice
 
-Uses the plain OpenAI SDK with manual tool-use loop.
+Uses the Google GenAI SDK with manual tool-use loop.
 Tools are inline methods on the AICoach class.
 """
 import json
 from typing import List, Dict, Optional
 
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from config import SportConfig
 from preprocess import DataLoader, ParameterExtractor
@@ -23,102 +24,93 @@ from pat_runner import PATRunner
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions for OpenAI function-calling
+# Tool definitions for Gemini function-calling
 # ---------------------------------------------------------------------------
 
-TOOLS = [
+TOOLS = types.Tool(function_declarations=[
     {
-        "type": "function",
-        "function": {
-            "name": "analyze_matchup",
-            "description": (
-                "Preprocess historical data for a matchup between two entities "
-                "(players/teams). Extracts frequency parameters from historical "
-                "data and generates a PCSP model file for PAT verification. "
-                "Returns parameter summary and generated file path."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity1": {
-                        "type": "string",
-                        "description": "Name of the first player/team"
-                    },
-                    "entity2": {
-                        "type": "string",
-                        "description": "Name of the second player/team"
-                    },
-                    "date": {
-                        "type": "string",
-                        "description": "Match date in YYYY-MM-DD format"
-                    },
-                    "variant": {
-                        "type": "string",
-                        "description": (
-                            "Model variant name (e.g. 'RH_RH' for tennis). "
-                            "If omitted, the first configured variant is used."
-                        )
-                    }
+        "name": "analyze_matchup",
+        "description": (
+            "Preprocess historical data for a matchup between two entities "
+            "(players/teams). Extracts frequency parameters from historical "
+            "data and generates a PCSP model file for PAT verification. "
+            "Returns parameter summary and generated file path."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity1": {
+                    "type": "string",
+                    "description": "Name of the first player/team"
                 },
-                "required": ["entity1", "entity2", "date"]
-            }
+                "entity2": {
+                    "type": "string",
+                    "description": "Name of the second player/team"
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Match date in YYYY-MM-DD format"
+                },
+                "variant": {
+                    "type": "string",
+                    "description": (
+                        "Model variant name (e.g. 'RH_RH' for tennis). "
+                        "If omitted, the first configured variant is used."
+                    )
+                }
+            },
+            "required": ["entity1", "entity2", "date"]
         }
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_win_probability",
-            "description": (
-                "Get the win probability from a PAT model check result. "
-                "If a probability value is provided (from manual PAT run), "
-                "records it. Otherwise returns instructions for running PAT."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity1": {
-                        "type": "string",
-                        "description": "Name of entity 1"
-                    },
-                    "entity2": {
-                        "type": "string",
-                        "description": "Name of entity 2"
-                    },
-                    "probability": {
-                        "type": "number",
-                        "description": "Manually entered probability (0-1) from PAT output"
-                    }
+        "name": "get_win_probability",
+        "description": (
+            "Get the win probability from a PAT model check result. "
+            "If a probability value is provided (from manual PAT run), "
+            "records it. Otherwise returns instructions for running PAT."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity1": {
+                    "type": "string",
+                    "description": "Name of entity 1"
                 },
-                "required": ["entity1", "entity2"]
-            }
+                "entity2": {
+                    "type": "string",
+                    "description": "Name of entity 2"
+                },
+                "probability": {
+                    "type": "number",
+                    "description": "Manually entered probability (0-1) from PAT output"
+                }
+            },
+            "required": ["entity1", "entity2"]
         }
     },
     {
-        "type": "function",
-        "function": {
-            "name": "compare_parameters",
-            "description": (
-                "Compare the extracted statistical parameters between two entities. "
-                "Shows which entity is stronger in each parameter group "
-                "(e.g. serve accuracy, return winners, rally consistency)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity1": {
-                        "type": "string",
-                        "description": "Name of entity 1"
-                    },
-                    "entity2": {
-                        "type": "string",
-                        "description": "Name of entity 2"
-                    }
+        "name": "compare_parameters",
+        "description": (
+            "Compare the extracted statistical parameters between two entities. "
+            "Shows which entity is stronger in each parameter group "
+            "(e.g. serve accuracy, return winners, rally consistency)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity1": {
+                    "type": "string",
+                    "description": "Name of entity 1"
                 },
-                "required": ["entity1", "entity2"]
-            }
+                "entity2": {
+                    "type": "string",
+                    "description": "Name of entity 2"
+                }
+            },
+            "required": ["entity1", "entity2"]
         }
     }
-]
+])
 
 SYSTEM_PROMPT = """You are an AI sports coach powered by formal methods. You combine:
 1. Historical statistical analysis (frequency counts from match data)
@@ -141,18 +133,18 @@ Available model variants: {variants}
 
 
 class AICoach:
-    """OpenAI-powered coaching assistant with tool-use."""
+    """Gemini-powered coaching assistant with tool-use."""
 
     def __init__(
         self,
         config: SportConfig,
-        openai_api_key: str,
-        model: str = "gpt-4o",
+        gemini_api_key: str,
+        model: str = "gemini-2.0-flash",
         pat_path: Optional[str] = None,
         output_dir: str = './output'
     ):
         self.config = config
-        self.client = OpenAI(api_key=openai_api_key)
+        self.client = genai.Client(api_key=gemini_api_key)
         self.model = model
         self.output_dir = output_dir
 
@@ -166,14 +158,20 @@ class AICoach:
         self._param_cache: Dict[str, Dict] = {}
 
         # Conversation history
-        self.messages: List[Dict] = []
+        self.contents: List[types.Content] = []
 
         # Build system prompt
         variant_names = [v.name for v in config.variants]
-        self.system_prompt = SYSTEM_PROMPT.format(
+        system_prompt = SYSTEM_PROMPT.format(
             sport_name=config.sport_name,
             entity_name=config.entity_name,
             variants=', '.join(variant_names)
+        )
+
+        # Gemini generation config with system instruction and tools
+        self.generate_config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            tools=[TOOLS],
         )
 
     # -------------------------------------------------------------------
@@ -328,7 +326,7 @@ class AICoach:
 
         Main loop:
           1. Add user message to conversation
-          2. Call OpenAI with tool definitions
+          2. Call Gemini with tool definitions
           3. If LLM wants to call tools -> execute them, feed results back
           4. Repeat until LLM produces a final text response
 
@@ -338,41 +336,46 @@ class AICoach:
         Returns:
             Coach's text response
         """
-        self.messages.append({"role": "user", "content": user_message})
+        self.contents.append(
+            types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
+        )
 
         while True:
-            response = self.client.chat.completions.create(
+            response = self.client.models.generate_content(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt}
-                ] + self.messages,
-                tools=TOOLS,
-                tool_choice="auto",
+                contents=self.contents,
+                config=self.generate_config,
             )
 
-            choice = response.choices[0]
-            msg = choice.message
+            # Add model response to history
+            model_content = response.candidates[0].content
+            self.contents.append(model_content)
 
-            # Add assistant message to history
-            self.messages.append(msg.model_dump())
+            # Check for function calls
+            function_calls = response.function_calls
+            if not function_calls:
+                return response.text or ""
 
-            # If no tool calls, return the final text
-            if not msg.tool_calls:
-                return msg.content or ""
-
-            # Execute each tool call and feed results back
-            for tool_call in msg.tool_calls:
-                fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments)
+            # Execute each function call and build responses
+            function_response_parts = []
+            for fc in function_calls:
+                fn_name = fc.name
+                fn_args = dict(fc.args)
                 result = self._execute_tool(fn_name, fn_args)
 
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                })
+                function_response_parts.append(
+                    types.Part.from_function_response(
+                        name=fn_name,
+                        response={"result": result},
+                    )
+                )
+
+            # Add all function responses as a single user-role Content
+            self.contents.append(
+                types.Content(role="user", parts=function_response_parts)
+            )
 
     def reset(self):
         """Clear conversation history and param cache."""
-        self.messages.clear()
+        self.contents.clear()
         self._param_cache.clear()

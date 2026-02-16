@@ -1,6 +1,6 @@
 pandas
 numpy
-openai
+google-genai
 python-dotenv
 python-dateutil
 tqdm

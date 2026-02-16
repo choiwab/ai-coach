@@ -8,8 +8,8 @@ Usage:
     # Single query mode
     python main.py --config configs/example_sport.json --query "Who wins, X vs Y?"
 
-    # Use a different OpenAI model
-    python main.py --config configs/example_sport.json --model gpt-4o-mini
+    # Use a different Gemini model
+    python main.py --config configs/example_sport.json --model gemini-2.0-flash
 """
 import argparse
 import os
@@ -24,7 +24,7 @@ from coach import AICoach
 def interactive_mode(coach: AICoach):
     """Run interactive chat loop."""
     print(f"\n=== AI {coach.config.sport_name.title()} Coach ===")
-    print("Powered by formal methods (PAT/PCSP#) + OpenAI")
+    print("Powered by formal methods (PAT/PCSP#) + Gemini")
     print("Type 'quit' to exit, 'reset' to clear conversation.\n")
 
     while True:
@@ -62,8 +62,8 @@ def main():
         help='Single query (non-interactive mode)'
     )
     parser.add_argument(
-        '--model', default='gpt-4o',
-        help='OpenAI model name (default: gpt-4o)'
+        '--model', default='gemini-2.0-flash',
+        help='Gemini model name (default: gemini-2.0-flash)'
     )
     parser.add_argument(
         '--output-dir', default='./output',
@@ -78,15 +78,15 @@ def main():
     config = SportConfig.from_json(args.config)
 
     # Get API key
-    api_key = os.environ.get('OPENAI_API_KEY')
+    api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
-        print("Error: Set the OPENAI_API_KEY environment variable.")
+        print("Error: Set the GEMINI_API_KEY environment variable.")
         sys.exit(1)
 
     # Create coach
     coach = AICoach(
         config=config,
-        openai_api_key=api_key,
+        gemini_api_key=api_key,
         model=args.model,
         output_dir=args.output_dir,
     )
