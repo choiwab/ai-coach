@@ -25,7 +25,7 @@ export GEMINI_API_KEY=your_key_here
 ```
 
 Notes:
-- Default chat model is `gemini-1.5-flash`.
+- Default chat model is `gemini-2.5-flash`.
 - If no key is set, chat still works using deterministic heuristic planning.
 
 ## PAT Setup
