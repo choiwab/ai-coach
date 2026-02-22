@@ -7,7 +7,7 @@ End-to-end badminton coaching pipeline where the LLM plans tool calls and PAT/PC
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install -e .
 ```
 
 Or:
