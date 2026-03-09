@@ -39,7 +39,11 @@ def main():
             print("\nKeys currently in Redis:")
             for i, key in enumerate(keys):
                 key_str = key.decode() if isinstance(key, bytes) else str(key)
-                print(f"  {i}: {key_str}")
+                if len(key_str) > 12:
+                    masked = f"{key_str[:6]}...{key_str[-4:]}"
+                else:
+                    masked = "***"
+                print(f"  {i}: {masked}")
         else:
             print(f"The Redis list '{list_key}' is currently empty.")
             
