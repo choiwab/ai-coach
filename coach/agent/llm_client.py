@@ -184,7 +184,7 @@ class LLMClient:
             # Prefer Upstash Redis list when configured; this gives global rotation.
             redis_url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
             redis_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
-            redis_list = os.getenv(_REDIS_KEYS_LIST_ENV, _DEFAULT_REDIS_KEYS_LIST)
+            redis_list = os.getenv("GEMINI_KEYS_REDIS_LIST", "gemini_api_keys")
 
             if UpstashRedis is not None and redis_url and redis_token:
                 try:
