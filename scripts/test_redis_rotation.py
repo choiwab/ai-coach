@@ -91,7 +91,7 @@ def test_redis_rotation() -> None:
         # Succeed dynamically on the 3rd attempt
         if call_count <= 2:
             print(f"    [Mock] Simulating Quota Error 429 using key '{client.api_key}'")
-            from google.api_core.exceptions import ResourceExhausted
+            
             raise ResourceExhausted("resource exhausted - 429")
         
         print(f"    [Mock] Simulating Success using key '{client.api_key}'")
