@@ -25,7 +25,7 @@ def main():
     list_key = os.getenv("GEMINI_KEYS_REDIS_LIST", "gemini_api_keys")
 
     if not redis_url or not redis_token:
-        print("Error: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set")
+        print("Error: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set", file=sys.stderr)
         sys.exit(1)
 
     redis = UpstashRedis(url=redis_url, token=redis_token)
