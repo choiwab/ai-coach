@@ -56,7 +56,7 @@ def test_redis_rotation() -> None:
     real_keys = _load_env_keys_only()
     
     if len(real_keys) < 3:
-        fail("Requires at least 2 real Gemini API keys in .env (e.g. GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3) to test rotation.")
+        fail("Requires at least 3 real Gemini API keys in .env (e.g. GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3) to test rotation.")
         return
         
     redis = UpstashRedis(url=original_env_url, token=original_env_token)
