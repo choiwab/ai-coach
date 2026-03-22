@@ -158,13 +158,15 @@ class LocalCSVAdapter:
     @staticmethod
     def _estimate_unforced_error_proxy(
         *,
-        attack_rate: float,
-        safe_rate: float,
-        flick_rate: float,
-        points_for: float,
-        points_against: float,
-    ) -> float:
-        total = max(points_for + points_against, 1.0)
+        attack_rate: float | pd.Series,
+        safe_rate: float | pd.Series,
+        flick_rate: float | pd.Series,
+        points_for: float | pd.Series,
+        points_against: float | pd.Series,
+    ) -> float | pd.Series:
+        total = (points_for + points_against).clip(lower=1.0) if isinstance(points_for, pd.Series) else max(
+            points_for + points_against, 1.0
+        )
         point_loss = points_against / total
         proxy = (
             0.08
@@ -173,6 +175,8 @@ class LocalCSVAdapter:
             + 0.11 * point_loss
             - 0.09 * safe_rate
         )
+        if isinstance(proxy, pd.Series):
+            return proxy.clip(lower=0.01, upper=0.6)
         return float(min(0.6, max(0.01, proxy)))
 
     def get_player_params(
@@ -216,15 +220,12 @@ class LocalCSVAdapter:
         points_against_total = float(perspective["points_against"].sum())
         point_share = points_for_total / max(points_for_total + points_against_total, 1.0)
 
-        ue_proxy_series = perspective.apply(
-            lambda row: self._estimate_unforced_error_proxy(
-                attack_rate=float(row["attack_rate"]),
-                safe_rate=float(row["safe_rate"]),
-                flick_rate=float(row["flick_rate"]),
-                points_for=float(row["points_for"]),
-                points_against=float(row["points_against"]),
-            ),
-            axis=1,
+        ue_proxy_series = self._estimate_unforced_error_proxy(
+            attack_rate=perspective["attack_rate"],
+            safe_rate=perspective["safe_rate"],
+            flick_rate=perspective["flick_rate"],
+            points_for=perspective["points_for"],
+            points_against=perspective["points_against"],
         )
         unforced_error_rate = float((ue_proxy_series * rally_weight).sum() / rally_weight.sum())
 
