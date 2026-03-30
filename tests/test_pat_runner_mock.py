@@ -3,6 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from coach.pat.mock_pat import (
+    _CANONICAL_PARAM_KEYS,
+    _LEGACY_PARAM_ALIASES,
+    _extract_params_from_pcsp,
+    mock_probability,
+)
 from coach.pat.parser import parse_probability, read_pat_output
 from coach.pat.runner import run_pat
 
@@ -40,3 +46,160 @@ def test_run_pat_mock_writes_artifacts_and_summary(tmp_path: Path) -> None:
     assert (tmp_path / "pat_stdout.txt").exists()
     assert (tmp_path / "pat_stderr.txt").exists()
     assert (tmp_path / "pat_run.json").exists()
+
+
+def test_run_pat_mock_respects_unforced_error_knobs(tmp_path: Path) -> None:
+    better_path = tmp_path / "better.pcsp"
+    better_path.write_text(
+        "// inline params for mock parser\n"
+        "pA_srv_win = 0.50\n"
+        "pA_rcv_win = 0.50\n"
+        "unforced_error_A = 0.12\n"
+        "unforced_error_B = 0.24\n"
+        "#assert M reaches X with prob;\n",
+        encoding="utf-8",
+    )
+    worse_path = tmp_path / "worse.pcsp"
+    worse_path.write_text(
+        "// inline params for mock parser\n"
+        "pA_srv_win = 0.50\n"
+        "pA_rcv_win = 0.50\n"
+        "unforced_error_A = 0.24\n"
+        "unforced_error_B = 0.12\n"
+        "#assert M reaches X with prob;\n",
+        encoding="utf-8",
+    )
+
+    better = run_pat(
+        pcsp_path=better_path,
+        out_path=tmp_path / "better_out.txt",
+        mode="mock",
+        pat_console_path=None,
+        timeout_s=30,
+        use_mono=None,
+    )
+    worse = run_pat(
+        pcsp_path=worse_path,
+        out_path=tmp_path / "worse_out.txt",
+        mode="mock",
+        pat_console_path=None,
+        timeout_s=30,
+        use_mono=None,
+    )
+
+    assert better["probability"] is not None
+    assert worse["probability"] is not None
+    assert better["probability"] > worse["probability"]
+
+
+def test_run_pat_mock_accepts_legacy_ue_rate_aliases(tmp_path: Path) -> None:
+    current_path = tmp_path / "current.pcsp"
+    current_path.write_text(
+        "// inline params for mock parser\n"
+        "pA_srv_win = 0.50\n"
+        "pA_rcv_win = 0.50\n"
+        "unforced_error_A = 0.14\n"
+        "unforced_error_B = 0.20\n"
+        "#assert M reaches X with prob;\n",
+        encoding="utf-8",
+    )
+    legacy_path = tmp_path / "legacy.pcsp"
+    legacy_path.write_text(
+        "// inline params for mock parser\n"
+        "pA_srv_win = 0.50\n"
+        "pA_rcv_win = 0.50\n"
+        "ue_rate_A = 0.14\n"
+        "ue_rate_B = 0.20\n"
+        "#assert M reaches X with prob;\n",
+        encoding="utf-8",
+    )
+
+    current = run_pat(
+        pcsp_path=current_path,
+        out_path=tmp_path / "current_out.txt",
+        mode="mock",
+        pat_console_path=None,
+        timeout_s=30,
+        use_mono=None,
+    )
+    legacy = run_pat(
+        pcsp_path=legacy_path,
+        out_path=tmp_path / "legacy_out.txt",
+        mode="mock",
+        pat_console_path=None,
+        timeout_s=30,
+        use_mono=None,
+    )
+
+    assert current["probability"] == legacy["probability"]
+
+
+def test_run_pat_mock_accepts_case_insensitive_param_names(tmp_path: Path) -> None:
+    canonical_path = tmp_path / "canonical.pcsp"
+    canonical_path.write_text(
+        "// inline params for mock parser\n"
+        "pA_srv_win = 0.61\n"
+        "pA_rcv_win = 0.53\n"
+        "unforced_error_A = 0.14\n"
+        "unforced_error_B = 0.20\n"
+        "#assert M reaches X with prob;\n",
+        encoding="utf-8",
+    )
+    uppercase_path = tmp_path / "uppercase.pcsp"
+    uppercase_path.write_text(
+        "// inline params for mock parser\n"
+        "PA_SRV_WIN = 0.61\n"
+        "PA_RCV_WIN = 0.53\n"
+        "UNFORCED_ERROR_A = 0.14\n"
+        "UNFORCED_ERROR_B = 0.20\n"
+        "#assert M reaches X with prob;\n",
+        encoding="utf-8",
+    )
+
+    canonical = run_pat(
+        pcsp_path=canonical_path,
+        out_path=tmp_path / "canonical_out.txt",
+        mode="mock",
+        pat_console_path=None,
+        timeout_s=30,
+        use_mono=None,
+    )
+    uppercase = run_pat(
+        pcsp_path=uppercase_path,
+        out_path=tmp_path / "uppercase_out.txt",
+        mode="mock",
+        pat_console_path=None,
+        timeout_s=30,
+        use_mono=None,
+    )
+
+    assert canonical["probability"] == uppercase["probability"]
+
+
+def test_mock_probability_normalizes_mixed_case_param_dicts() -> None:
+    canonical = mock_probability(
+        {
+            "pA_srv_win": 0.61,
+            "pA_rcv_win": 0.53,
+            "unforced_error_A": 0.14,
+            "unforced_error_B": 0.20,
+        }
+    )
+    mixed_case = mock_probability(
+        {
+            "PA_SRV_WIN": 0.61,
+            "Pa_RcV_WiN": 0.53,
+            "UNFORCED_ERROR_A": 0.14,
+            "ue_rate_b": 0.20,
+        }
+    )
+
+    assert canonical == mixed_case
+
+
+def test_mock_pcsp_parser_accepts_all_declared_param_keys() -> None:
+    for index, key in enumerate((*_CANONICAL_PARAM_KEYS, *_LEGACY_PARAM_ALIASES), start=1):
+        value = index / 100
+        params = _extract_params_from_pcsp(f"{key.upper()} = {value}\n")
+        expected_key = _LEGACY_PARAM_ALIASES.get(key.lower(), key)
+        assert params == {expected_key: value}
