@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from coach.data.adapters.local_csv import LocalCSVAdapter, PlayerRecord
 from coach.model.params import InfluenceWeights, MatchupParams, PlayerParams, RallyStyleMix, ServeMix
@@ -43,12 +44,22 @@ def estimate_influence_weights(adapter: LocalCSVAdapter) -> InfluenceWeights:
             w_ue=0.08,
             w_return_pressure=0.07,
             w_clutch=0.05,
+            w_serve_type=0.03,
+            w_rally_tolerance=0.02,
+            w_error_profile=0.03,
+            w_handedness=0.01,
         )
 
     x_short = df["a_short_serve_rate"] - df["b_short_serve_rate"]
     x_attack = df["a_attack_rate"] - df["b_attack_rate"]
     x_safe_term = -(df["b_safe_rate"] - df["a_safe_rate"])
     total_points = (df["a_points"] + df["b_points"]).clip(lower=1.0)
+    n_rows = len(df)
+
+    def series_or_default(name: str, default: float) -> Any:
+        if name in df.columns:
+            return df[name]
+        return np.full(n_rows, default, dtype=float)
 
     a_receive = (df["b_serve_rallies"] - df["b_serve_wins"]) / df["b_serve_rallies"].clip(lower=1.0)
     b_receive = (df["a_serve_rallies"] - df["a_serve_wins"]) / df["a_serve_rallies"].clip(lower=1.0)
@@ -74,6 +85,26 @@ def estimate_influence_weights(adapter: LocalCSVAdapter) -> InfluenceWeights:
     winner_sign = np.where(df["winner_id"] == df["playerA_id"], 1.0, -1.0)
     x_clutch = close_factor.to_numpy(dtype=float) * winner_sign
 
+    a_short_srv_skill = series_or_default("a_short_serve_win_rate", 0.5)
+    b_short_srv_skill = series_or_default("b_short_serve_win_rate", 0.5)
+    a_long_srv_skill = series_or_default("a_long_serve_win_rate", 0.5)
+    b_long_srv_skill = series_or_default("b_long_serve_win_rate", 0.5)
+    x_serve_type = 0.5 * (a_short_srv_skill - b_short_srv_skill) + 0.5 * (a_long_srv_skill - b_long_srv_skill)
+
+    a_net_err = series_or_default("a_net_error_lost_rate", 0.0)
+    b_net_err = series_or_default("b_net_error_lost_rate", 0.0)
+    a_out_err = series_or_default("a_out_error_lost_rate", 0.0)
+    b_out_err = series_or_default("b_out_error_lost_rate", 0.0)
+    x_error_profile = 0.5 * ((b_net_err - a_net_err) + (b_out_err - a_out_err))
+
+    players = adapter.players_df.copy()
+    handedness = players["handedness"] if "handedness" in players.columns else np.full(len(players), "", dtype=object)
+    players["left_flag"] = (pd.Series(handedness).fillna("").str.upper() == "L").astype(float)
+    left_map = players.set_index("player_id")["left_flag"].to_dict()
+    a_left = df["playerA_id"].map(left_map).fillna(0.0)
+    b_left = df["playerB_id"].map(left_map).fillna(0.0)
+    x_handedness = a_left - b_left
+
     y = (df["a_points"] / total_points) - 0.5
 
     X = np.column_stack([
@@ -84,9 +115,17 @@ def estimate_influence_weights(adapter: LocalCSVAdapter) -> InfluenceWeights:
         x_ue.to_numpy(dtype=float),
         x_return_pressure.to_numpy(dtype=float),
         x_clutch,
+        np.asarray(x_serve_type, dtype=float),
+        np.asarray(x_error_profile, dtype=float),
+        x_handedness.to_numpy(dtype=float),
     ])
 
-    beta, *_ = np.linalg.lstsq(X, y.to_numpy(dtype=float), rcond=None)
+    # Ridge regression stabilizes small-sample estimates and avoids aggressive weights.
+    ridge_lambda = 2.5
+    xtx = X.T @ X
+    reg = np.eye(xtx.shape[0], dtype=float) * ridge_lambda
+    reg[0, 0] = 0.0  # keep intercept unpenalized
+    beta = np.linalg.solve(xtx + reg, X.T @ y.to_numpy(dtype=float))
 
     w_short = float(np.clip(abs(beta[1]), 0.01, 0.2))
     w_attack = float(np.clip(abs(beta[2]), 0.01, 0.2))
@@ -94,6 +133,9 @@ def estimate_influence_weights(adapter: LocalCSVAdapter) -> InfluenceWeights:
     w_ue = float(np.clip(abs(beta[4]), 0.01, 0.2))
     w_return_pressure = float(np.clip(abs(beta[5]), 0.01, 0.2))
     w_clutch = float(np.clip(abs(beta[6]), 0.01, 0.12))
+    w_serve_type = float(np.clip(abs(beta[7]), 0.0, 0.08))
+    w_error_profile = float(np.clip(abs(beta[8]), 0.0, 0.08))
+    w_handedness = float(np.clip(abs(beta[9]), 0.0, 0.08))
 
     return InfluenceWeights(
         w_short=w_short,
@@ -102,6 +144,10 @@ def estimate_influence_weights(adapter: LocalCSVAdapter) -> InfluenceWeights:
         w_ue=w_ue,
         w_return_pressure=w_return_pressure,
         w_clutch=w_clutch,
+        w_serve_type=w_serve_type,
+        w_rally_tolerance=0.02,
+        w_error_profile=w_error_profile,
+        w_handedness=w_handedness,
     )
 
 
@@ -121,6 +167,15 @@ def _build_player_params(stats: dict[str, Any], sample_matches: int) -> PlayerPa
         unforced_error_rate=clamp(float(stats["unforced_error_rate"]), 0.01, 0.6),
         return_pressure=clamp(float(stats["return_pressure"]), 0.01, 0.99),
         clutch_point_win=clamp(float(stats["clutch_point_win"]), 0.01, 0.99),
+        short_serve_skill=clamp(float(stats.get("short_serve_skill", 0.5)), 0.01, 0.99),
+        long_serve_skill=clamp(float(stats.get("long_serve_skill", 0.5)), 0.01, 0.99),
+        rally_tolerance=clamp(float(stats.get("rally_tolerance", 0.5)), 0.01, 0.99),
+        net_error_rate=clamp(float(stats.get("net_error_rate", 0.0)), 0.0, 1.0),
+        out_error_rate=clamp(float(stats.get("out_error_rate", 0.0)), 0.0, 1.0),
+        backhand_rate=clamp(float(stats.get("backhand_rate", 0.0)), 0.0, 1.0),
+        aroundhead_rate=clamp(float(stats.get("aroundhead_rate", 0.0)), 0.0, 1.0),
+        handedness_flag=clamp(float(stats.get("handedness_flag", 0.0)), 0.0, 1.0),
+        reliability=clamp(float(stats.get("reliability", 1.0)), 0.0, 1.0),
         serve_mix=serve_mix,
         rally_style=rally_style,
         sample_matches=sample_matches,
