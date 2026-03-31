@@ -572,7 +572,7 @@ def validate(players_df: pd.DataFrame, matches_df: pd.DataFrame) -> None:
             value = row[col]
             if value < 0:
                 errors.append(f"Row {idx}: {col}={value} must be >= 0")
-            if float(value) % 1 != 0:
+            if not float(value).is_integer():
                 errors.append(f"Row {idx}: {col}={value} must be an integer")
 
         # Serve wins <= serve rallies
