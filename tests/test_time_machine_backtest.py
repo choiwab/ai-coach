@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from coach.backtest.data import SnapshotCSVAdapter, prepare_chronological_matches
 from coach.backtest.engine import BacktestConfig, TimeMachineBacktester
 from coach.backtest.feature_contract import extract_pcsp_feature_contract
 from coach.backtest.models import RollingPlattCalibrator
+from coach.data.adapters.local_csv import LocalCSVAdapter
 
 
 def _synthetic_match(
@@ -176,6 +178,29 @@ def test_rolling_platt_calibrator_corrects_systematic_underconfidence() -> None:
         calibrator.update(0.2, 1)
 
     assert calibrator.transform(0.2) > 0.2
+
+
+def test_recency_weights_preserve_unit_weight_and_subday_decay() -> None:
+    perspective = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2024-01-10T11:00:00",
+                    "2024-01-10T05:00:00",
+                ]
+            )
+        }
+    )
+
+    weights = LocalCSVAdapter._recency_weights(
+        perspective,
+        as_of_date="2024-01-10T11:00:00",
+        half_life_days=0.25,
+    )
+
+    assert weights.iloc[0] == pytest.approx(1.0)
+    assert 0.0 < weights.iloc[1] < 1.0
+    assert weights.iloc[1] == pytest.approx(0.5)
 
 
 def test_time_machine_backtester_runs_on_sample_dataset(tmp_path: Path) -> None:

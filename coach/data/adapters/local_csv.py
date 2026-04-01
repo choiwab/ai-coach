@@ -314,10 +314,12 @@ class LocalCSVAdapter:
         if reference_time is None:
             return pd.Series(1.0, index=perspective.index, dtype=float)
 
-        days_ago = (reference_time - pd.to_datetime(perspective["date"], utc=False)).dt.days.clip(lower=0)
-        decay = float(half_life_days / max(half_life_days, 1.0))
-        weights = 0.5 ** (days_ago / max(half_life_days, 1.0))
-        return pd.Series(weights * decay, index=perspective.index, dtype=float)
+        effective_half_life = max(float(half_life_days), 1e-6)
+        ages_in_days = (
+            (reference_time - pd.to_datetime(perspective["date"], utc=False)).dt.total_seconds() / 86_400.0
+        ).clip(lower=0.0)
+        weights = 0.5 ** (ages_in_days / effective_half_life)
+        return pd.Series(weights, index=perspective.index, dtype=float)
 
     @staticmethod
     def _weighted_ratio(numerator: pd.Series, denominator: pd.Series) -> float:

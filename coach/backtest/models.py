@@ -18,6 +18,17 @@ def _sigmoid(value: float) -> float:
     return z / (1.0 + z)
 
 
+def _sigmoid_array(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=float)
+    result = np.empty_like(array, dtype=float)
+    non_negative = array >= 0
+
+    result[non_negative] = 1.0 / (1.0 + np.exp(-array[non_negative]))
+    exp_values = np.exp(array[~non_negative])
+    result[~non_negative] = exp_values / (1.0 + exp_values)
+    return result
+
+
 def _logit(probability: float) -> float:
     p = min(max(float(probability), 1e-6), 1 - 1e-6)
     return math.log(p / (1.0 - p))
@@ -131,7 +142,7 @@ class RollingPlattCalibrator:
 
         for _ in range(self.max_iterations):
             logits = (coef * xs) + intercept
-            preds = np.asarray([_sigmoid(value) for value in logits], dtype=float)
+            preds = _sigmoid_array(logits)
             error = preds - ys
             grad_coef = float(np.mean(error * xs))
             grad_intercept = float(np.mean(error))
