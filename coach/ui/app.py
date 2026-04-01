@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 from coach.agent.llm_client import LLMClient
 from coach.agent.planner import AgentExecutor
 from coach.service import BadmintonCoachService
+
+load_dotenv(override=True)
 
 app = FastAPI(title="AI Badminton Coach")
 service = BadmintonCoachService()
@@ -252,6 +255,10 @@ def _render_home() -> str:
             color: var(--muted);
           }}
 
+          option {{
+            color: black;
+          }}
+
           input, select, textarea, button {{
             width: 100%;
             font: inherit;
@@ -346,13 +353,53 @@ def _render_home() -> str:
             position: relative;
           }}
 
-          .result-card::before {{
-            content: "";
-            position: absolute;
-            inset: 0 auto auto 0;
-            width: 100%;
-            height: 5px;
-            background: linear-gradient(90deg, var(--accent), var(--accent-3));
+          .result-matchup {{
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+          }}
+
+          .result-label {{
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: #ffd15a;
+          }}
+
+          .result-title {{
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--ink);
+          }}
+
+          .coach-card {{
+            display: grid;
+            gap: 12px;
+            margin-top: 8px;
+          }}
+
+          .coach-summary {{
+            font-size: 1rem;
+            line-height: 1.6;
+          }}
+
+          .coach-section-title {{
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: #ffd15a;
+          }}
+
+          .coach-list {{
+            margin: 0;
+            padding-left: 18px;
+            color: var(--ink);
+          }}
+
+          .coach-list li {{
+            margin: 0 0 6px 0;
           }}
 
           .metric-row {{
@@ -553,7 +600,7 @@ def _render_home() -> str:
                 <form id="chat-form" class="grid">
                   <div class="full">
                     <label for="query">Ask the coach</label>
-                    <textarea id="query" name="query" placeholder="Example: Against Kento Momota, should Viktor Axelsen press the attack early or extend rallies and protect his error rate?"></textarea>
+                    <textarea id="query" name="query" placeholder="Example: Against Kento MOMOTA, should Viktor AXELSEN press the attack early or extend rallies and protect his error rate?"></textarea>
                   </div>
                   <div>
                     <label for="chat-mode">Execution mode</label>
@@ -583,9 +630,9 @@ def _render_home() -> str:
                 </form>
 
                 <div class="hint-list" id="chat-hints">
-                  <button class="hint" type="button">Predict Viktor Axelsen vs Kento Momota</button>
-                  <button class="hint" type="button">What strategy should Akane Yamaguchi use against An Se-young?</button>
-                  <button class="hint" type="button">How can Tai Tzu Ying improve her odds versus Chen Yufei?</button>
+                  <button class="hint" type="button">Predict Viktor AXELSEN vs Kento MOMOTA</button>
+                  <button class="hint" type="button">What strategy should Carolina MARIN use against An Se Young?</button>
+                  <button class="hint" type="button">How can PUSARLA V. Sindhu improve her odds versus Ratchanok INTANON?</button>
                 </div>
 
                 <div class="chat-output" id="chat-output" style="margin-top: 18px;">
@@ -605,12 +652,12 @@ def _render_home() -> str:
                 <div class="panel-body">
                   <form id="predict-form" class="grid">
                     <div>
-                      <label for="predict-a">Player A</label>
-                      <input id="predict-a" name="a" list="players" placeholder="Viktor Axelsen" />
+                      <label for="predict-a">Player</label>
+                      <input id="predict-a" name="a" list="players" placeholder="Viktor AXELSEN" />
                     </div>
                     <div>
-                      <label for="predict-b">Player B</label>
-                      <input id="predict-b" name="b" list="players" placeholder="Kento Momota" />
+                      <label for="predict-b">Opponent</label>
+                      <input id="predict-b" name="b" list="players" placeholder="Kento MOMOTA" />
                     </div>
                     <div>
                       <label for="predict-mode">Mode</label>
@@ -639,12 +686,12 @@ def _render_home() -> str:
                 <div class="panel-body">
                   <form id="strategy-form" class="grid">
                     <div>
-                      <label for="strategy-a">Player A</label>
-                      <input id="strategy-a" name="a" list="players" placeholder="Akane Yamaguchi" />
+                      <label for="strategy-a">Player</label>
+                      <input id="strategy-a" name="a" list="players" placeholder="Carolina MARIN" />
                     </div>
                     <div>
-                      <label for="strategy-b">Player B</label>
-                      <input id="strategy-b" name="b" list="players" placeholder="An Se-young" />
+                      <label for="strategy-b">Opponent</label>
+                      <input id="strategy-b" name="b" list="players" placeholder="An Se Young" />
                     </div>
                     <div>
                       <label for="strategy-mode">Mode</label>
@@ -678,6 +725,110 @@ def _render_home() -> str:
           const playerSeed = {example_json};
           const playerList = document.getElementById("players");
 
+          function escapeHtml(value) {{
+            return String(value)
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&#39;");
+          }}
+
+          function formatPercent(value) {{
+            const num = Number(value);
+            if (!Number.isFinite(num)) {{
+              return escapeHtml(value);
+            }}
+            return `${{(num * 100).toFixed(2)}}%`;
+          }}
+
+          function extractJsonPayload(text) {{
+            const raw = String(text || "").trim();
+            if (!raw) {{
+              return null;
+            }}
+
+            try {{
+              return JSON.parse(raw);
+            }} catch (_err) {{
+            }}
+
+            const fenced = raw.match(/```json\\s*([\\s\\S]*?)\\s*```/i) || raw.match(/```\\s*([\\s\\S]*?)\\s*```/i);
+            if (fenced) {{
+              try {{
+                return JSON.parse(fenced[1]);
+              }} catch (_err) {{
+              }}
+            }}
+
+            const start = raw.indexOf("{{");
+            const end = raw.lastIndexOf("}}");
+            if (start >= 0 && end > start) {{
+              try {{
+                return JSON.parse(raw.slice(start, end + 1));
+              }} catch (_err) {{
+              }}
+            }}
+
+            return null;
+          }}
+
+          function formatCoachJson(payload) {{
+            if (!payload || typeof payload !== "object") {{
+              return null;
+            }}
+
+            const advice = payload.advice || payload.summary || payload.answer;
+            const details = payload.strategy_details || payload.details || payload.data || null;
+            const adjustments = details && Array.isArray(details.key_strategic_adjustments)
+              ? details.key_strategic_adjustments
+              : [];
+
+            let body = `<div class="coach-card">`;
+            if (advice) {{
+              body += `<div><div class="coach-section-title">Coach Advice</div><div class="coach-summary">${{escapeHtml(advice)}}</div></div>`;
+            }}
+
+            if (details && typeof details === "object") {{
+              body += `<div class="metric-row">`;
+              if ("improved_win_probability" in details) {{
+                body += `<div class="metric"><span class="muted">Improved win rate</span><strong>${{formatPercent(details.improved_win_probability)}}</strong></div>`;
+              }}
+              if ("probability_delta" in details) {{
+                body += `<div class="metric"><span class="muted">Delta</span><strong>${{formatPercent(details.probability_delta)}}</strong></div>`;
+              }}
+              body += `</div>`;
+            }}
+
+            if (adjustments.length) {{
+              body += `<div><div class="coach-section-title">Key Adjustments</div><ul class="coach-list">`;
+              adjustments.forEach((item) => {{
+                const area = item.area ? escapeHtml(item.area) : "Adjustment";
+                const impact = item.delta_impact ? `: ${{escapeHtml(item.delta_impact)}}` : "";
+                body += `<li>${{area}}${{impact}}</li>`;
+              }});
+              body += `</ul></div>`;
+            }}
+
+            if (!advice && !adjustments.length) {{
+              body += `<pre>${{escapeHtml(JSON.stringify(payload, null, 2))}}</pre>`;
+            }}
+
+            body += `</div>`;
+            return body;
+          }}
+
+          function formatCoachAnswer(answer) {{
+            const parsed = extractJsonPayload(answer);
+            if (parsed) {{
+              const formatted = formatCoachJson(parsed);
+              if (formatted) {{
+                return formatted;
+              }}
+            }}
+            return `<div class="coach-summary">${{escapeHtml(answer)}}</div>`;
+          }}
+
           function addBubble(kind, content) {{
             const bubble = document.createElement("div");
             bubble.className = `bubble ${{kind}}`;
@@ -688,11 +839,14 @@ def _render_home() -> str:
           function renderPrediction(result) {{
             return `
               <div class="result-card">
-                <strong>${{result.player_a}}</strong> vs <strong>${{result.player_b}}</strong>
+                <div class="result-matchup">
+                  <span class="result-label">Prediction For</span>
+                  <span class="result-title">${{result.player_a}} vs ${{result.player_b}}</span>
+                </div>
+                <div class="muted">${{result.player_a}} is the player being evaluated.</div>
                 <div class="metric-row">
                   <div class="metric"><span class="muted">Win probability</span><strong>${{(result.probability * 100).toFixed(2)}}%</strong></div>
                   <div class="metric"><span class="muted">Mode</span><strong>${{result.mode}}</strong></div>
-                  <div class="metric"><span class="muted">Run</span><strong>${{result.run_id}}</strong></div>
                 </div>
                 <div class="muted" style="margin-top: 10px;">Artifacts: ${{result.run_dir}}</div>
               </div>
@@ -703,16 +857,21 @@ def _render_home() -> str:
             const best = result.best_candidate;
             return `
               <div class="result-card">
-                <strong>${{result.player_a}}</strong> vs <strong>${{result.player_b}}</strong>
+                <div class="result-matchup">
+                  <span class="result-label">Strategy For</span>
+                  <span class="result-title">${{result.player_a}} vs ${{result.player_b}}</span>
+                </div>
+                <div class="muted">${{result.player_a}} is the player being optimized against ${{result.player_b}}.</div>
                 <div class="metric-row">
                   <div class="metric"><span class="muted">Baseline</span><strong>${{(result.baseline_probability * 100).toFixed(2)}}%</strong></div>
                   <div class="metric"><span class="muted">Improved</span><strong>${{(result.improved_probability * 100).toFixed(2)}}%</strong></div>
                   <div class="metric"><span class="muted">Delta</span><strong>${{(result.delta * 100).toFixed(2)}}%</strong></div>
                 </div>
                 <div class="muted" style="margin-top: 12px;">
-                  Best candidate: short serve ${{(best.serve_short_delta * 100).toFixed(1)}}%, attack ${{(best.attack_delta * 100).toFixed(1)}}%,
+                  Best candidate for ${{result.player_a}}: short serve ${{(best.serve_short_delta * 100).toFixed(1)}}%, attack ${{(best.attack_delta * 100).toFixed(1)}}%,
                   unforced-error proxy ${{(best.unforced_error_delta * 100).toFixed(1)}}%, return pressure ${{(best.return_pressure_delta * 100).toFixed(1)}}%.
                 </div>
+                <div class="muted" style="margin-top: 10px;">Artifacts: ${{result.run_dir}}</div>
               </div>
             `;
           }}
@@ -760,17 +919,17 @@ def _render_home() -> str:
               budget: Number(document.getElementById("chat-budget").value),
               show_trace: document.getElementById("show-trace").value === "true",
             }};
-            addBubble("user", payload.query.replace(/</g, "&lt;"));
+            addBubble("user", escapeHtml(payload.query));
             try {{
               const result = await postJson("/chat", payload);
-              let body = `<div><strong>Coach answer</strong></div><div style="margin-top:8px;">${{result.answer.replace(/</g, "&lt;")}}</div>`;
-              body += `<div class="muted" style="margin-top: 10px;">Run directory: ${{result.payload.run_dir}}</div>`;
+              let body = `<div><strong>Coach answer</strong></div>${{formatCoachAnswer(result.answer)}}`;
+              body += `<div class="muted" style="margin-top: 10px;">Run directory: ${{escapeHtml(result.payload.run_dir)}}</div>`;
               if (result.show_trace) {{
-                body += `<div style="margin-top:12px;"><strong>Trace</strong><pre>${{JSON.stringify(result.tool_trace, null, 2).replace(/</g, "&lt;")}}</pre></div>`;
+                body += `<div style="margin-top:12px;"><strong>Trace</strong><pre>${{escapeHtml(JSON.stringify(result.tool_trace, null, 2))}}</pre></div>`;
               }}
               addBubble("system", body);
             }} catch (err) {{
-              addBubble("system", `<strong>Request failed</strong><div style="margin-top:8px;">${{String(err.message || err).replace(/</g, "&lt;")}}</div>`);
+              addBubble("system", `<strong>Request failed</strong><div style="margin-top:8px;">${{escapeHtml(String(err.message || err))}}</div>`);
             }} finally {{
               submit.disabled = false;
             }}
