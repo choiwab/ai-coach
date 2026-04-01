@@ -40,6 +40,29 @@ class _EffectiveProbabilityScales:
 _EFFECTIVE_PROBABILITY_SCALES = _EffectiveProbabilityScales()
 
 
+def _centered_branch_probabilities(
+    *,
+    base_prob: float,
+    branch_weights: list[float],
+    raw_offsets: list[float],
+) -> list[float]:
+    """Create branch probabilities whose weighted average stays near the base probability."""
+    total_weight = max(sum(branch_weights), 1e-9)
+    normalized = [weight / total_weight for weight in branch_weights]
+    mean_offset = sum(weight * offset for weight, offset in zip(normalized, raw_offsets))
+    return [clamp(base_prob + offset - mean_offset) for offset in raw_offsets]
+
+
+def _binary_weights(share: float, *, scale: int) -> tuple[int, int]:
+    first = int(round(clamp(share, 0.0, 1.0) * scale))
+    return first, scale - first
+
+
+def _probability_weights(probability: float, *, scale: int) -> tuple[int, int]:
+    win_weight = int(round(clamp(probability, 0.0, 1.0) * scale))
+    return win_weight, scale - win_weight
+
+
 class ServeMix(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -290,9 +313,110 @@ class MatchupParams(BaseModel):
     def to_template_context(self) -> dict[str, Any]:
         eff = self.effective_probabilities()
         scale = 10000
+        a = self.player_a
+        b = self.player_b
+        feature_scale = self._new_feature_reliability_scale()
+        edges = self._micro_edges()
 
-        p_a_srv_w = int(round(eff["pA_srv_win"] * scale))
-        p_a_rcv_w = int(round(eff["pA_rcv_win"] * scale))
+        p_a_srv_w, p_a_srv_lose_w = _probability_weights(eff["pA_srv_win"], scale=scale)
+        p_a_rcv_w, p_a_rcv_lose_w = _probability_weights(eff["pA_rcv_win"], scale=scale)
+
+        serve_type_scale = feature_scale * self.weights.w_serve_type * 0.7
+        serve_type_offsets = [
+            serve_type_scale * (a.short_serve_skill - b.short_serve_skill),
+            serve_type_scale * (a.long_serve_skill - b.long_serve_skill),
+        ]
+
+        a_short_srv_prob, a_long_srv_prob = _centered_branch_probabilities(
+            base_prob=eff["pA_srv_win"],
+            branch_weights=[a.serve_mix.short, a.serve_mix.flick],
+            raw_offsets=serve_type_offsets,
+        )
+        a_short_rcv_prob, a_long_rcv_prob = _centered_branch_probabilities(
+            base_prob=eff["pA_rcv_win"],
+            branch_weights=[b.serve_mix.short, b.serve_mix.flick],
+            raw_offsets=serve_type_offsets,
+        )
+
+        a_serve_long_share = clamp(
+            0.15 + 0.55 * (0.5 * (a.rally_tolerance + b.rally_tolerance)) + 0.12 * a.rally_style.safe
+            - 0.08 * a.rally_style.attack,
+            0.05,
+            0.9,
+        )
+        b_serve_long_share = clamp(
+            0.15 + 0.55 * (0.5 * (a.rally_tolerance + b.rally_tolerance)) + 0.12 * b.rally_style.safe
+            - 0.08 * b.rally_style.attack,
+            0.05,
+            0.9,
+        )
+
+        rally_phase_edge = feature_scale * (
+            0.70 * self.weights.w_rally_tolerance * edges["rally_tolerance_edge"]
+            + 0.20 * self.weights.w_error_profile * edges["error_profile_edge"]
+            + 0.15 * self.weights.w_backhand * edges["backhand_edge"]
+            + 0.15 * self.weights.w_aroundhead * edges["aroundhead_edge"]
+        )
+        quick_long_offsets = [-0.6 * rally_phase_edge, 0.6 * rally_phase_edge]
+
+        a_short_srv_quick_prob, a_short_srv_long_prob = _centered_branch_probabilities(
+            base_prob=a_short_srv_prob,
+            branch_weights=[1.0 - a_serve_long_share, a_serve_long_share],
+            raw_offsets=quick_long_offsets,
+        )
+        a_long_srv_quick_prob, a_long_srv_long_prob = _centered_branch_probabilities(
+            base_prob=a_long_srv_prob,
+            branch_weights=[1.0 - a_serve_long_share, a_serve_long_share],
+            raw_offsets=quick_long_offsets,
+        )
+        a_short_rcv_quick_prob, a_short_rcv_long_prob = _centered_branch_probabilities(
+            base_prob=a_short_rcv_prob,
+            branch_weights=[1.0 - b_serve_long_share, b_serve_long_share],
+            raw_offsets=quick_long_offsets,
+        )
+        a_long_rcv_quick_prob, a_long_rcv_long_prob = _centered_branch_probabilities(
+            base_prob=a_long_rcv_prob,
+            branch_weights=[1.0 - b_serve_long_share, b_serve_long_share],
+            raw_offsets=quick_long_offsets,
+        )
+
+        serve_a_short_w, serve_a_long_w = _binary_weights(a.serve_mix.short, scale=scale)
+        serve_b_short_w, serve_b_long_w = _binary_weights(b.serve_mix.short, scale=scale)
+        serve_a_quick_w, serve_a_extended_w = _binary_weights(1.0 - a_serve_long_share, scale=scale)
+        serve_b_quick_w, serve_b_extended_w = _binary_weights(1.0 - b_serve_long_share, scale=scale)
+
+        p_a_short_srv_quick_w, p_a_short_srv_quick_lose_w = _probability_weights(
+            a_short_srv_quick_prob,
+            scale=scale,
+        )
+        p_a_short_srv_long_w, p_a_short_srv_long_lose_w = _probability_weights(
+            a_short_srv_long_prob,
+            scale=scale,
+        )
+        p_a_long_srv_quick_w, p_a_long_srv_quick_lose_w = _probability_weights(
+            a_long_srv_quick_prob,
+            scale=scale,
+        )
+        p_a_long_srv_long_w, p_a_long_srv_long_lose_w = _probability_weights(
+            a_long_srv_long_prob,
+            scale=scale,
+        )
+        p_a_short_rcv_quick_w, p_a_short_rcv_quick_lose_w = _probability_weights(
+            a_short_rcv_quick_prob,
+            scale=scale,
+        )
+        p_a_short_rcv_long_w, p_a_short_rcv_long_lose_w = _probability_weights(
+            a_short_rcv_long_prob,
+            scale=scale,
+        )
+        p_a_long_rcv_quick_w, p_a_long_rcv_quick_lose_w = _probability_weights(
+            a_long_rcv_quick_prob,
+            scale=scale,
+        )
+        p_a_long_rcv_long_w, p_a_long_rcv_long_lose_w = _probability_weights(
+            a_long_rcv_long_prob,
+            scale=scale,
+        )
 
         context = {
             "target": self.target,
@@ -302,49 +426,81 @@ class MatchupParams(BaseModel):
             "pA_srv_win": f"{eff['pA_srv_win']:.6f}",
             "pA_rcv_win": f"{eff['pA_rcv_win']:.6f}",
             "pA_srv_win_w": p_a_srv_w,
-            "pA_srv_lose_w": scale - p_a_srv_w,
+            "pA_srv_lose_w": p_a_srv_lose_w,
             "pA_rcv_win_w": p_a_rcv_w,
-            "pA_rcv_lose_w": scale - p_a_rcv_w,
-            "baseA_srv_win": f"{self.player_a.base_srv_win:.6f}",
-            "baseA_rcv_win": f"{self.player_a.base_rcv_win:.6f}",
-            "baseB_srv_win": f"{self.player_b.base_srv_win:.6f}",
-            "baseB_rcv_win": f"{self.player_b.base_rcv_win:.6f}",
-            "unforced_error_A": f"{self.player_a.unforced_error_rate:.6f}",
-            "unforced_error_B": f"{self.player_b.unforced_error_rate:.6f}",
-            "ue_rate_A": f"{self.player_a.unforced_error_rate:.6f}",
-            "ue_rate_B": f"{self.player_b.unforced_error_rate:.6f}",
-            "return_pressure_A": f"{self.player_a.return_pressure:.6f}",
-            "return_pressure_B": f"{self.player_b.return_pressure:.6f}",
-            "clutch_A": f"{self.player_a.clutch_point_win:.6f}",
-            "clutch_B": f"{self.player_b.clutch_point_win:.6f}",
-            "short_serve_skill_A": f"{self.player_a.short_serve_skill:.6f}",
-            "short_serve_skill_B": f"{self.player_b.short_serve_skill:.6f}",
-            "long_serve_skill_A": f"{self.player_a.long_serve_skill:.6f}",
-            "long_serve_skill_B": f"{self.player_b.long_serve_skill:.6f}",
-            "rally_tolerance_A": f"{self.player_a.rally_tolerance:.6f}",
-            "rally_tolerance_B": f"{self.player_b.rally_tolerance:.6f}",
-            "net_error_rate_A": f"{self.player_a.net_error_rate:.6f}",
-            "net_error_rate_B": f"{self.player_b.net_error_rate:.6f}",
-            "out_error_rate_A": f"{self.player_a.out_error_rate:.6f}",
-            "out_error_rate_B": f"{self.player_b.out_error_rate:.6f}",
-            "backhand_rate_A": f"{self.player_a.backhand_rate:.6f}",
-            "backhand_rate_B": f"{self.player_b.backhand_rate:.6f}",
-            "aroundhead_rate_A": f"{self.player_a.aroundhead_rate:.6f}",
-            "aroundhead_rate_B": f"{self.player_b.aroundhead_rate:.6f}",
-            "handedness_flag_A": f"{self.player_a.handedness_flag:.6f}",
-            "handedness_flag_B": f"{self.player_b.handedness_flag:.6f}",
-            "reliability_A": f"{self.player_a.reliability:.6f}",
-            "reliability_B": f"{self.player_b.reliability:.6f}",
-            "serve_mix_A_short": f"{self.player_a.serve_mix.short:.6f}",
-            "serve_mix_A_flick": f"{self.player_a.serve_mix.flick:.6f}",
-            "serve_mix_B_short": f"{self.player_b.serve_mix.short:.6f}",
-            "serve_mix_B_flick": f"{self.player_b.serve_mix.flick:.6f}",
-            "rally_style_A_attack": f"{self.player_a.rally_style.attack:.6f}",
-            "rally_style_A_neutral": f"{self.player_a.rally_style.neutral:.6f}",
-            "rally_style_A_safe": f"{self.player_a.rally_style.safe:.6f}",
-            "rally_style_B_attack": f"{self.player_b.rally_style.attack:.6f}",
-            "rally_style_B_neutral": f"{self.player_b.rally_style.neutral:.6f}",
-            "rally_style_B_safe": f"{self.player_b.rally_style.safe:.6f}",
+            "pA_rcv_lose_w": p_a_rcv_lose_w,
+            "baseA_srv_win": f"{a.base_srv_win:.6f}",
+            "baseA_rcv_win": f"{a.base_rcv_win:.6f}",
+            "baseB_srv_win": f"{b.base_srv_win:.6f}",
+            "baseB_rcv_win": f"{b.base_rcv_win:.6f}",
+            "unforced_error_A": f"{a.unforced_error_rate:.6f}",
+            "unforced_error_B": f"{b.unforced_error_rate:.6f}",
+            "ue_rate_A": f"{a.unforced_error_rate:.6f}",
+            "ue_rate_B": f"{b.unforced_error_rate:.6f}",
+            "return_pressure_A": f"{a.return_pressure:.6f}",
+            "return_pressure_B": f"{b.return_pressure:.6f}",
+            "clutch_A": f"{a.clutch_point_win:.6f}",
+            "clutch_B": f"{b.clutch_point_win:.6f}",
+            "short_serve_skill_A": f"{a.short_serve_skill:.6f}",
+            "short_serve_skill_B": f"{b.short_serve_skill:.6f}",
+            "long_serve_skill_A": f"{a.long_serve_skill:.6f}",
+            "long_serve_skill_B": f"{b.long_serve_skill:.6f}",
+            "rally_tolerance_A": f"{a.rally_tolerance:.6f}",
+            "rally_tolerance_B": f"{b.rally_tolerance:.6f}",
+            "net_error_rate_A": f"{a.net_error_rate:.6f}",
+            "net_error_rate_B": f"{b.net_error_rate:.6f}",
+            "out_error_rate_A": f"{a.out_error_rate:.6f}",
+            "out_error_rate_B": f"{b.out_error_rate:.6f}",
+            "backhand_rate_A": f"{a.backhand_rate:.6f}",
+            "backhand_rate_B": f"{b.backhand_rate:.6f}",
+            "aroundhead_rate_A": f"{a.aroundhead_rate:.6f}",
+            "aroundhead_rate_B": f"{b.aroundhead_rate:.6f}",
+            "handedness_flag_A": f"{a.handedness_flag:.6f}",
+            "handedness_flag_B": f"{b.handedness_flag:.6f}",
+            "reliability_A": f"{a.reliability:.6f}",
+            "reliability_B": f"{b.reliability:.6f}",
+            "serve_mix_A_short": f"{a.serve_mix.short:.6f}",
+            "serve_mix_A_flick": f"{a.serve_mix.flick:.6f}",
+            "serve_mix_B_short": f"{b.serve_mix.short:.6f}",
+            "serve_mix_B_flick": f"{b.serve_mix.flick:.6f}",
+            "rally_style_A_attack": f"{a.rally_style.attack:.6f}",
+            "rally_style_A_neutral": f"{a.rally_style.neutral:.6f}",
+            "rally_style_A_safe": f"{a.rally_style.safe:.6f}",
+            "rally_style_B_attack": f"{b.rally_style.attack:.6f}",
+            "rally_style_B_neutral": f"{b.rally_style.neutral:.6f}",
+            "rally_style_B_safe": f"{b.rally_style.safe:.6f}",
+            "serveA_short_w": serve_a_short_w,
+            "serveA_long_w": serve_a_long_w,
+            "serveB_short_w": serve_b_short_w,
+            "serveB_long_w": serve_b_long_w,
+            "serveA_quick_rally_w": serve_a_quick_w,
+            "serveA_long_rally_w": serve_a_extended_w,
+            "serveB_quick_rally_w": serve_b_quick_w,
+            "serveB_long_rally_w": serve_b_extended_w,
+            "pA_short_srv_quick_win": f"{a_short_srv_quick_prob:.6f}",
+            "pA_short_srv_long_win": f"{a_short_srv_long_prob:.6f}",
+            "pA_long_srv_quick_win": f"{a_long_srv_quick_prob:.6f}",
+            "pA_long_srv_long_win": f"{a_long_srv_long_prob:.6f}",
+            "pA_short_rcv_quick_win": f"{a_short_rcv_quick_prob:.6f}",
+            "pA_short_rcv_long_win": f"{a_short_rcv_long_prob:.6f}",
+            "pA_long_rcv_quick_win": f"{a_long_rcv_quick_prob:.6f}",
+            "pA_long_rcv_long_win": f"{a_long_rcv_long_prob:.6f}",
+            "pA_short_srv_quick_win_w": p_a_short_srv_quick_w,
+            "pA_short_srv_quick_lose_w": p_a_short_srv_quick_lose_w,
+            "pA_short_srv_long_win_w": p_a_short_srv_long_w,
+            "pA_short_srv_long_lose_w": p_a_short_srv_long_lose_w,
+            "pA_long_srv_quick_win_w": p_a_long_srv_quick_w,
+            "pA_long_srv_quick_lose_w": p_a_long_srv_quick_lose_w,
+            "pA_long_srv_long_win_w": p_a_long_srv_long_w,
+            "pA_long_srv_long_lose_w": p_a_long_srv_long_lose_w,
+            "pA_short_rcv_quick_win_w": p_a_short_rcv_quick_w,
+            "pA_short_rcv_quick_lose_w": p_a_short_rcv_quick_lose_w,
+            "pA_short_rcv_long_win_w": p_a_short_rcv_long_w,
+            "pA_short_rcv_long_lose_w": p_a_short_rcv_long_lose_w,
+            "pA_long_rcv_quick_win_w": p_a_long_rcv_quick_w,
+            "pA_long_rcv_quick_lose_w": p_a_long_rcv_quick_lose_w,
+            "pA_long_rcv_long_win_w": p_a_long_rcv_long_w,
+            "pA_long_rcv_long_lose_w": p_a_long_rcv_long_lose_w,
             "w_short": f"{self.weights.w_short:.6f}",
             "w_attack": f"{self.weights.w_attack:.6f}",
             "w_safe": f"{self.weights.w_safe:.6f}",
@@ -357,7 +513,7 @@ class MatchupParams(BaseModel):
             "w_handedness": f"{self.weights.w_handedness:.6f}",
             "w_backhand": f"{self.weights.w_backhand:.6f}",
             "w_aroundhead": f"{self.weights.w_aroundhead:.6f}",
-            "playerA_name": self.player_a.name,
-            "playerB_name": self.player_b.name,
+            "playerA_name": a.name,
+            "playerB_name": b.name,
         }
         return context

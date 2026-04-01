@@ -18,6 +18,15 @@
 // aroundhead_rate_A={{aroundhead_rate_A}}, aroundhead_rate_B={{aroundhead_rate_B}}
 // handedness_flag_A={{handedness_flag_A}}, handedness_flag_B={{handedness_flag_B}}
 // reliability_A={{reliability_A}}, reliability_B={{reliability_B}}
+// Structural branch probabilities:
+// A serve type weights short={{serveA_short_w}}, long={{serveA_long_w}}
+// B serve type weights short={{serveB_short_w}}, long={{serveB_long_w}}
+// A serve rally phase weights quick={{serveA_quick_rally_w}}, long={{serveA_long_rally_w}}
+// B serve rally phase weights quick={{serveB_quick_rally_w}}, long={{serveB_long_rally_w}}
+// A short serve quick/long win={{pA_short_srv_quick_win}} / {{pA_short_srv_long_win}}
+// A long serve quick/long win={{pA_long_srv_quick_win}} / {{pA_long_srv_long_win}}
+// A receive vs short quick/long win={{pA_short_rcv_quick_win}} / {{pA_short_rcv_long_win}}
+// A receive vs long quick/long win={{pA_long_rcv_quick_win}} / {{pA_long_rcv_long_win}}
 // Weights: w_short={{w_short}}, w_attack={{w_attack}}, w_safe={{w_safe}}, w_ue={{w_ue}}, w_return_pressure={{w_return_pressure}}, w_clutch={{w_clutch}}, w_serve_type={{w_serve_type}}, w_rally_tolerance={{w_rally_tolerance}}, w_error_profile={{w_error_profile}}, w_handedness={{w_handedness}}, w_backhand={{w_backhand}}, w_aroundhead={{w_aroundhead}}
 
 #define TARGET {{target}};
@@ -38,16 +47,76 @@ var server = A;
 BadmintonMatch = Rally;
 
 Rally = [a_games < GAMES_TO_WIN && b_games < GAMES_TO_WIN]
-    ([server == A] ServeA [] [server == B] ServeB);
+    ([server == A] ServeAType [] [server == B] ServeBType);
 
-ServeA = pcase {
-    {{pA_srv_win_w}}: AWinServe -> UpdateA
-    {{pA_srv_lose_w}}: BWinOnA -> UpdateB
+ServeAType = pcase {
+    {{serveA_short_w}}: AShortServe -> ResolveAShortType
+    {{serveA_long_w}}: ALongServe -> ResolveALongType
 };
 
-ServeB = pcase {
-    {{pA_rcv_win_w}}: AWinReceive -> UpdateA
-    {{pA_rcv_lose_w}}: BWinServe -> UpdateB
+ServeBType = pcase {
+    {{serveB_short_w}}: BShortServe -> ResolveBShortType
+    {{serveB_long_w}}: BLongServe -> ResolveBLongType
+};
+
+ResolveAShortType = pcase {
+    {{serveA_quick_rally_w}}: AShortQuickRally -> ResolveAShortQuick
+    {{serveA_long_rally_w}}: AShortLongRally -> ResolveAShortLong
+};
+
+ResolveALongType = pcase {
+    {{serveA_quick_rally_w}}: ALongQuickRally -> ResolveALongQuick
+    {{serveA_long_rally_w}}: ALongLongRally -> ResolveALongLong
+};
+
+ResolveBShortType = pcase {
+    {{serveB_quick_rally_w}}: BShortQuickRally -> ResolveBShortQuick
+    {{serveB_long_rally_w}}: BShortLongRally -> ResolveBShortLong
+};
+
+ResolveBLongType = pcase {
+    {{serveB_quick_rally_w}}: BLongQuickRally -> ResolveBLongQuick
+    {{serveB_long_rally_w}}: BLongLongRally -> ResolveBLongLong
+};
+
+ResolveAShortQuick = pcase {
+    {{pA_short_srv_quick_win_w}}: AShortQuickWin -> UpdateA
+    {{pA_short_srv_quick_lose_w}}: AShortQuickLose -> UpdateB
+};
+
+ResolveAShortLong = pcase {
+    {{pA_short_srv_long_win_w}}: AShortLongWin -> UpdateA
+    {{pA_short_srv_long_lose_w}}: AShortLongLose -> UpdateB
+};
+
+ResolveALongQuick = pcase {
+    {{pA_long_srv_quick_win_w}}: ALongQuickWin -> UpdateA
+    {{pA_long_srv_quick_lose_w}}: ALongQuickLose -> UpdateB
+};
+
+ResolveALongLong = pcase {
+    {{pA_long_srv_long_win_w}}: ALongLongWin -> UpdateA
+    {{pA_long_srv_long_lose_w}}: ALongLongLose -> UpdateB
+};
+
+ResolveBShortQuick = pcase {
+    {{pA_short_rcv_quick_win_w}}: AShortReceiveQuickWin -> UpdateA
+    {{pA_short_rcv_quick_lose_w}}: BShortQuickWin -> UpdateB
+};
+
+ResolveBShortLong = pcase {
+    {{pA_short_rcv_long_win_w}}: AShortReceiveLongWin -> UpdateA
+    {{pA_short_rcv_long_lose_w}}: BShortLongWin -> UpdateB
+};
+
+ResolveBLongQuick = pcase {
+    {{pA_long_rcv_quick_win_w}}: ALongReceiveQuickWin -> UpdateA
+    {{pA_long_rcv_quick_lose_w}}: BLongQuickWin -> UpdateB
+};
+
+ResolveBLongLong = pcase {
+    {{pA_long_rcv_long_win_w}}: ALongReceiveLongWin -> UpdateA
+    {{pA_long_rcv_long_lose_w}}: BLongLongWin -> UpdateB
 };
 
 UpdateA = ScoreA{a_points = a_points + 1; server = A;} -> CheckGame;
