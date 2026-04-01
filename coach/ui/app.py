@@ -16,6 +16,8 @@ load_dotenv(override=True)
 
 app = FastAPI(title="AI Badminton Coach")
 service = BadmintonCoachService()
+llm_client = LLMClient()
+chat_executor = AgentExecutor(service=service, llm_client=llm_client)
 
 
 class PredictRequest(BaseModel):
@@ -135,18 +137,6 @@ def _render_home() -> str:
             letter-spacing: -0.04em;
           }}
 
-          # .hero p {{
-          #   max-width: 660px;
-          #   margin: 0;
-          #   font-size: 1.05rem;
-          #   line-height: 1.6;
-          #   color: rgba(238, 247, 242, 0.78);
-          # }}
-
-          # .hero-copy {{
-          #   position: relative;
-          #   z-index: 1;
-          # }}
 
           .hero-meta {{
             display: inline-flex;
@@ -724,6 +714,18 @@ def _render_home() -> str:
         <script>
           const playerSeed = {example_json};
           const playerList = document.getElementById("players");
+          const chatOutput = document.getElementById("chat-output");
+
+          function el(tag, options = {{}}) {{
+            const node = document.createElement(tag);
+            if (options.className) {{
+              node.className = options.className;
+            }}
+            if (options.text !== undefined) {{
+              node.textContent = String(options.text);
+            }}
+            return node;
+          }}
 
           function escapeHtml(value) {{
             return String(value)
@@ -784,37 +786,48 @@ def _render_home() -> str:
               ? details.key_strategic_adjustments
               : [];
 
-            let body = `<div class="coach-card">`;
+            const body = el("div", {{ className: "coach-card" }});
             if (advice) {{
-              body += `<div><div class="coach-section-title">Coach Advice</div><div class="coach-summary">${{escapeHtml(advice)}}</div></div>`;
+              const section = el("div");
+              section.appendChild(el("div", {{ className: "coach-section-title", text: "Coach Advice" }}));
+              section.appendChild(el("div", {{ className: "coach-summary", text: advice }}));
+              body.appendChild(section);
             }}
 
             if (details && typeof details === "object") {{
-              body += `<div class="metric-row">`;
+              const metricRow = el("div", {{ className: "metric-row" }});
               if ("improved_win_probability" in details) {{
-                body += `<div class="metric"><span class="muted">Improved win rate</span><strong>${{formatPercent(details.improved_win_probability)}}</strong></div>`;
+                const metric = el("div", {{ className: "metric" }});
+                metric.appendChild(el("span", {{ className: "muted", text: "Improved win rate" }}));
+                metric.appendChild(el("strong", {{ text: formatPercent(details.improved_win_probability) }}));
+                metricRow.appendChild(metric);
               }}
               if ("probability_delta" in details) {{
-                body += `<div class="metric"><span class="muted">Delta</span><strong>${{formatPercent(details.probability_delta)}}</strong></div>`;
+                const metric = el("div", {{ className: "metric" }});
+                metric.appendChild(el("span", {{ className: "muted", text: "Delta" }}));
+                metric.appendChild(el("strong", {{ text: formatPercent(details.probability_delta) }}));
+                metricRow.appendChild(metric);
               }}
-              body += `</div>`;
+              body.appendChild(metricRow);
             }}
 
             if (adjustments.length) {{
-              body += `<div><div class="coach-section-title">Key Adjustments</div><ul class="coach-list">`;
+              const section = el("div");
+              section.appendChild(el("div", {{ className: "coach-section-title", text: "Key Adjustments" }}));
+              const list = el("ul", {{ className: "coach-list" }});
               adjustments.forEach((item) => {{
-                const area = item.area ? escapeHtml(item.area) : "Adjustment";
-                const impact = item.delta_impact ? `: ${{escapeHtml(item.delta_impact)}}` : "";
-                body += `<li>${{area}}${{impact}}</li>`;
+                const area = item.area || "Adjustment";
+                const impact = item.delta_impact ? `: ${{item.delta_impact}}` : "";
+                list.appendChild(el("li", {{ text: `${{area}}${{impact}}` }}));
               }});
-              body += `</ul></div>`;
+              section.appendChild(list);
+              body.appendChild(section);
             }}
 
             if (!advice && !adjustments.length) {{
-              body += `<pre>${{escapeHtml(JSON.stringify(payload, null, 2))}}</pre>`;
+              body.appendChild(el("pre", {{ text: JSON.stringify(payload, null, 2) }}));
             }}
 
-            body += `</div>`;
             return body;
           }}
 
@@ -826,54 +839,87 @@ def _render_home() -> str:
                 return formatted;
               }}
             }}
-            return `<div class="coach-summary">${{escapeHtml(answer)}}</div>`;
+            return el("div", {{ className: "coach-summary", text: answer }});
           }}
 
           function addBubble(kind, content) {{
             const bubble = document.createElement("div");
             bubble.className = `bubble ${{kind}}`;
-            bubble.innerHTML = content;
-            document.getElementById("chat-output").prepend(bubble);
+            bubble.append(content);
+            chatOutput.prepend(bubble);
           }}
 
           function renderPrediction(result) {{
-            return `
-              <div class="result-card">
-                <div class="result-matchup">
-                  <span class="result-label">Prediction For</span>
-                  <span class="result-title">${{result.player_a}} vs ${{result.player_b}}</span>
-                </div>
-                <div class="muted">${{result.player_a}} is the player being evaluated.</div>
-                <div class="metric-row">
-                  <div class="metric"><span class="muted">Win probability</span><strong>${{(result.probability * 100).toFixed(2)}}%</strong></div>
-                  <div class="metric"><span class="muted">Mode</span><strong>${{result.mode}}</strong></div>
-                </div>
-                <div class="muted" style="margin-top: 10px;">Artifacts: ${{result.run_dir}}</div>
-              </div>
-            `;
+            const card = el("div", {{ className: "result-card" }});
+            const matchup = el("div", {{ className: "result-matchup" }});
+            matchup.appendChild(el("span", {{ className: "result-label", text: "Prediction For" }}));
+            matchup.appendChild(el("span", {{ className: "result-title", text: `${{result.player_a}} vs ${{result.player_b}}` }}));
+            card.appendChild(matchup);
+            card.appendChild(el("div", {{ className: "muted", text: `${{result.player_a}} is the player being evaluated.` }}));
+
+            const metricRow = el("div", {{ className: "metric-row" }});
+            const probMetric = el("div", {{ className: "metric" }});
+            probMetric.appendChild(el("span", {{ className: "muted", text: `${{result.player_a}} win probability` }}));
+            probMetric.appendChild(el("strong", {{ text: `${{(result.probability * 100).toFixed(2)}}%` }}));
+            metricRow.appendChild(probMetric);
+
+            const modeMetric = el("div", {{ className: "metric" }});
+            modeMetric.appendChild(el("span", {{ className: "muted", text: "Mode" }}));
+            modeMetric.appendChild(el("strong", {{ text: result.mode }}));
+            metricRow.appendChild(modeMetric);
+
+            card.appendChild(metricRow);
+            const artifacts = el("div", {{ className: "muted", text: `Artifacts: ${{result.run_dir}}` }});
+            artifacts.style.marginTop = "10px";
+            card.appendChild(artifacts);
+            return card;
           }}
 
           function renderStrategy(result) {{
             const best = result.best_candidate;
-            return `
-              <div class="result-card">
-                <div class="result-matchup">
-                  <span class="result-label">Strategy For</span>
-                  <span class="result-title">${{result.player_a}} vs ${{result.player_b}}</span>
-                </div>
-                <div class="muted">${{result.player_a}} is the player being optimized against ${{result.player_b}}.</div>
-                <div class="metric-row">
-                  <div class="metric"><span class="muted">Baseline</span><strong>${{(result.baseline_probability * 100).toFixed(2)}}%</strong></div>
-                  <div class="metric"><span class="muted">Improved</span><strong>${{(result.improved_probability * 100).toFixed(2)}}%</strong></div>
-                  <div class="metric"><span class="muted">Delta</span><strong>${{(result.delta * 100).toFixed(2)}}%</strong></div>
-                </div>
-                <div class="muted" style="margin-top: 12px;">
-                  Best candidate for ${{result.player_a}}: short serve ${{(best.serve_short_delta * 100).toFixed(1)}}%, attack ${{(best.attack_delta * 100).toFixed(1)}}%,
-                  unforced-error proxy ${{(best.unforced_error_delta * 100).toFixed(1)}}%, return pressure ${{(best.return_pressure_delta * 100).toFixed(1)}}%.
-                </div>
-                <div class="muted" style="margin-top: 10px;">Artifacts: ${{result.run_dir}}</div>
-              </div>
-            `;
+            const card = el("div", {{ className: "result-card" }});
+            const matchup = el("div", {{ className: "result-matchup" }});
+            matchup.appendChild(el("span", {{ className: "result-label", text: "Strategy For" }}));
+            matchup.appendChild(el("span", {{ className: "result-title", text: `${{result.player_a}} vs ${{result.player_b}}` }}));
+            card.appendChild(matchup);
+            card.appendChild(el("div", {{ className: "muted", text: `${{result.player_a}} is the player being optimized against ${{result.player_b}}.` }}));
+
+            const metricRow = el("div", {{ className: "metric-row" }});
+            const baselineMetric = el("div", {{ className: "metric" }});
+            baselineMetric.appendChild(el("span", {{ className: "muted", text: `${{result.player_a}} baseline` }}));
+            baselineMetric.appendChild(el("strong", {{ text: `${{(result.baseline_probability * 100).toFixed(2)}}%` }}));
+            metricRow.appendChild(baselineMetric);
+
+            const improvedMetric = el("div", {{ className: "metric" }});
+            improvedMetric.appendChild(el("span", {{ className: "muted", text: `${{result.player_a}} improved` }}));
+            improvedMetric.appendChild(el("strong", {{ text: `${{(result.improved_probability * 100).toFixed(2)}}%` }}));
+            metricRow.appendChild(improvedMetric);
+
+            const deltaMetric = el("div", {{ className: "metric" }});
+            deltaMetric.appendChild(el("span", {{ className: "muted", text: "Delta" }}));
+            deltaMetric.appendChild(el("strong", {{ text: `${{(result.delta * 100).toFixed(2)}}%` }}));
+            metricRow.appendChild(deltaMetric);
+
+            card.appendChild(metricRow);
+
+            const description = el(
+              "div",
+              {{
+                className: "muted",
+                text:
+                  `Best candidate for ${{result.player_a}}: short serve ${{(best.serve_short_delta * 100).toFixed(1)}}%, ` +
+                  `attack ${{(best.attack_delta * 100).toFixed(1)}}%, ` +
+                  `unforced-error proxy ${{(best.unforced_error_delta * 100).toFixed(1)}}%, ` +
+                  `return pressure ${{(best.return_pressure_delta * 100).toFixed(1)}}%.`,
+              }},
+            );
+            description.style.marginTop = "12px";
+            card.appendChild(description);
+
+            const artifacts = el("div", {{ className: "muted", text: `Artifacts: ${{result.run_dir}}` }});
+            artifacts.style.marginTop = "10px";
+            card.appendChild(artifacts);
+            return card;
           }}
 
           async function postJson(url, payload) {{
@@ -919,17 +965,33 @@ def _render_home() -> str:
               budget: Number(document.getElementById("chat-budget").value),
               show_trace: document.getElementById("show-trace").value === "true",
             }};
-            addBubble("user", escapeHtml(payload.query));
+            addBubble("user", payload.query);
             try {{
               const result = await postJson("/chat", payload);
-              let body = `<div><strong>Coach answer</strong></div>${{formatCoachAnswer(result.answer)}}`;
-              body += `<div class="muted" style="margin-top: 10px;">Run directory: ${{escapeHtml(result.payload.run_dir)}}</div>`;
+              const body = document.createDocumentFragment();
+              const heading = el("div");
+              heading.appendChild(el("strong", {{ text: "Coach answer" }}));
+              body.appendChild(heading);
+              body.appendChild(formatCoachAnswer(result.answer));
+
+              const runDir = el("div", {{ className: "muted", text: `Run directory: ${{result.payload.run_dir}}` }});
+              runDir.style.marginTop = "10px";
+              body.appendChild(runDir);
               if (result.show_trace) {{
-                body += `<div style="margin-top:12px;"><strong>Trace</strong><pre>${{escapeHtml(JSON.stringify(result.tool_trace, null, 2))}}</pre></div>`;
+                const traceWrap = el("div");
+                traceWrap.style.marginTop = "12px";
+                traceWrap.appendChild(el("strong", {{ text: "Trace" }}));
+                traceWrap.appendChild(el("pre", {{ text: JSON.stringify(result.tool_trace, null, 2) }}));
+                body.appendChild(traceWrap);
               }}
               addBubble("system", body);
             }} catch (err) {{
-              addBubble("system", `<strong>Request failed</strong><div style="margin-top:8px;">${{escapeHtml(String(err.message || err))}}</div>`);
+              const body = document.createDocumentFragment();
+              body.appendChild(el("strong", {{ text: "Request failed" }}));
+              const message = el("div", {{ text: String(err.message || err) }});
+              message.style.marginTop = "8px";
+              body.appendChild(message);
+              addBubble("system", body);
             }} finally {{
               submit.disabled = false;
             }}
@@ -953,7 +1015,7 @@ def _render_home() -> str:
                 mode: document.getElementById("predict-mode").value,
                 window: Number(document.getElementById("predict-window").value),
               }});
-              document.getElementById("predict-result").innerHTML = renderPrediction(result);
+              document.getElementById("predict-result").replaceChildren(renderPrediction(result));
             }} catch (err) {{
               document.getElementById("predict-result").textContent = String(err.message || err);
             }} finally {{
@@ -974,7 +1036,7 @@ def _render_home() -> str:
                 window: Number(document.getElementById("strategy-window").value),
                 budget: Number(document.getElementById("strategy-budget").value),
               }});
-              document.getElementById("strategy-result").innerHTML = renderStrategy(result);
+              document.getElementById("strategy-result").replaceChildren(renderStrategy(result));
             }} catch (err) {{
               document.getElementById("strategy-result").textContent = String(err.message || err);
             }} finally {{
@@ -1045,7 +1107,7 @@ def strategy(req: StrategyRequest) -> dict[str, Any]:
 @app.post("/chat")
 def chat(req: ChatRequest) -> dict[str, Any]:
     try:
-        result = AgentExecutor(service=service, llm_client=LLMClient()).run(
+        result = chat_executor.run(
             req.query,
             mode=req.mode,
             window=req.window,
