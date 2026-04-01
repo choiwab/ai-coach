@@ -176,3 +176,71 @@ def test_stroke_profile_edges_influence_probabilities() -> None:
 
     assert improved.effective_probabilities()["pA_srv_win"] > baseline.effective_probabilities()["pA_srv_win"]
     assert improved.effective_probabilities()["pA_rcv_win"] > baseline.effective_probabilities()["pA_rcv_win"]
+
+
+def test_template_context_branch_probabilities_track_effective_probabilities() -> None:
+    params = MatchupParams(
+        player_a=make_player("a", "Player A").model_copy(
+            update={
+                "short_serve_skill": 0.72,
+                "long_serve_skill": 0.61,
+                "rally_tolerance": 0.67,
+                "net_error_rate": 0.08,
+                "out_error_rate": 0.10,
+                "backhand_rate": 0.22,
+                "aroundhead_rate": 0.18,
+                "reliability": 0.9,
+            }
+        ),
+        player_b=make_player("b", "Player B").model_copy(
+            update={
+                "short_serve_skill": 0.48,
+                "long_serve_skill": 0.43,
+                "rally_tolerance": 0.51,
+                "net_error_rate": 0.18,
+                "out_error_rate": 0.21,
+                "backhand_rate": 0.39,
+                "aroundhead_rate": 0.06,
+                "reliability": 0.85,
+            }
+        ),
+        weights=InfluenceWeights(
+            w_short=0.04,
+            w_attack=0.06,
+            w_safe=0.05,
+            w_serve_type=0.05,
+            w_rally_tolerance=0.04,
+            w_error_profile=0.04,
+            w_backhand=0.03,
+            w_aroundhead=0.03,
+        ),
+    )
+
+    eff = params.effective_probabilities()
+    context = params.to_template_context()
+    scale = 10000.0
+
+    serve_a_short = float(context["serveA_short_w"]) / scale
+    serve_a_quick = float(context["serveA_quick_rally_w"]) / scale
+    serve_a_long = float(context["serveA_long_rally_w"]) / scale
+    serve_b_short = float(context["serveB_short_w"]) / scale
+    serve_b_quick = float(context["serveB_quick_rally_w"]) / scale
+    serve_b_long = float(context["serveB_long_rally_w"]) / scale
+
+    reconstructed_srv = serve_a_short * (
+        serve_a_quick * float(context["pA_short_srv_quick_win"])
+        + serve_a_long * float(context["pA_short_srv_long_win"])
+    ) + (1.0 - serve_a_short) * (
+        serve_a_quick * float(context["pA_long_srv_quick_win"])
+        + serve_a_long * float(context["pA_long_srv_long_win"])
+    )
+    reconstructed_rcv = serve_b_short * (
+        serve_b_quick * float(context["pA_short_rcv_quick_win"])
+        + serve_b_long * float(context["pA_short_rcv_long_win"])
+    ) + (1.0 - serve_b_short) * (
+        serve_b_quick * float(context["pA_long_rcv_quick_win"])
+        + serve_b_long * float(context["pA_long_rcv_long_win"])
+    )
+
+    assert reconstructed_srv == pytest.approx(eff["pA_srv_win"], abs=0.01)
+    assert reconstructed_rcv == pytest.approx(eff["pA_rcv_win"], abs=0.01)

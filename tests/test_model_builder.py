@@ -60,5 +60,8 @@ def test_builder_injects_template_values(tmp_path: Path) -> None:
     assert "short_serve_skill_A=0.500000" in text
     assert "backhand_rate_A=0.000000" in text
     assert "w_rally_tolerance=0.020000" in text
+    assert "ServeAType = pcase {" in text
+    assert "ResolveAShortQuick = pcase {" in text
+    assert "ResolveBLongLong = pcase {" in text
     assert "#assert BadmintonMatch reaches A_WinsMatch with prob;" in text
     assert result.params_json_path.exists()
