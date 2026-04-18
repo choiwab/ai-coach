@@ -1,0 +1,427 @@
+\documentclass{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  urlcolor=blue!60!black
+}
+
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codecomment}{RGB}{0,110,80}
+\definecolor{codekeyword}{RGB}{0,70,140}
+\definecolor{codestring}{RGB}{163,21,21}
+
+\lstdefinestyle{code}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  commentstyle=\color{codecomment},
+  keywordstyle=\color{codekeyword}\bfseries,
+  stringstyle=\color{codestring},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{black!20},
+  tabsize=4,
+  keepspaces=true,
+  captionpos=b
+}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\setlist[itemize]{leftmargin=1.5em}
+
+\title{AI Sports Agent via LLM Tool Planning and Probabilistic Model Checking\\
+\large A Source-Code Analysis of the AI Badminton Coach}
+\author{}
+\date{April 1, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Abstract}
+This report analyzes the complete source code of an AI sports-agent project whose concrete implementation is an \emph{AI Badminton Coach}. The system operationalizes a principled division of labor between a large language model and a formal verification engine: the LLM is restricted to planning and explanation, while all match-winning probabilities are computed externally through a parametric PCSP\# model executed by PAT Console or, in development mode, by a deterministic mock verifier. The repository contains a full pipeline for player resolution, historical feature extraction, probabilistic model construction, strategy perturbation, backtesting, and artifact generation. The shipped dataset contains 27 players and 44 matches derived from ShuttleSet-style rally data. The codebase is supported by 66 passing automated tests, a leakage-safe backtesting harness, and CLI and HTTP interfaces. In reproduced mock-mode runs, the repository reports \(P(\text{Viktor Axelsen beats Kento Momota}) = 0.497735\), and a budgeted sensitivity search improves that value to \(0.512490\) through a quantified tactical adjustment. The overarching result is an auditable architecture in which natural-language interaction is retained, but the numerically critical reasoning path is moved into formal, executable, and inspectable model-checking machinery.
+
+\section{Introduction}
+Probabilistic model checking (PMC) provides a mathematically explicit way to evaluate stochastic systems. Instead of asking a language model to estimate a probability directly, PMC encodes the system as a state-transition process with probabilistic branches and then evaluates temporal or reachability properties over that process. In this repository, PAT is the execution engine and PCSP\# is the modeling language used to express badminton match dynamics.
+
+This design responds to a fundamental weakness of ordinary LLM-only sports assistants. A pure LLM can describe strategy fluently, but it has no internal guarantee that its numbers correspond to a coherent stochastic process. Numerical outputs may be hallucinated, inconsistent across turns, or disconnected from the actual structure of a match. These limitations are especially serious when the task is not mere text generation, but a claim such as ``Player A has a \(49.8\%\) chance to win'' or ``a \(3\%\) increase in short-serve frequency improves winning odds by \(1.5\) percentage points.''
+
+The codebase addresses this problem by turning the LLM into a \emph{tool-using planner} rather than a calculator. The current implementation does \emph{not} let the LLM generate arbitrary PCSP\# syntax token by token. Instead, the LLM is constrained to produce typed JSON plans, after which deterministic Python code resolves players, computes features from historical data, injects parameters into a generic PCSP\# template, runs PAT, and finally summarizes the computed result. The repository therefore instantiates a broader ``AI Sports Agent'' concept with a badminton-specific case study that is technically rigorous and directly auditable.
+
+\section{System Architecture}
+The repository is organized as a layered tool-using system rather than a monolithic chatbot. The control surfaces are \path{main.py}, \path{coach/cli.py}, and \path{coach/ui/app.py}; the planning layer lives in \path{coach/agent}; the data and model layers live in \path{coach/data} and \path{coach/model}; PAT integration lives in \path{coach/pat}; and evaluation and experimentation are implemented in \path{coach/analysis} and \path{coach/backtest}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{L{0.25\linewidth}L{0.69\linewidth}}
+\toprule
+Repository slice & Responsibility \\
+\midrule
+\path{coach/agent} & Prompt engiprojectneering, Gemini client, JSON schemas, planning logic, and natural-language result synthesis. \\
+\path{coach/data} & Local CSV adapter, ShuttleSet-derived schema, player lookup, feature estimation, cold-start priors, head-to-head blending, and influence-weight fitting. \\
+\path{coach/model} & Typed parameter validation, effective rally-probability computation, template rendering, and traceable parameter export. \\
+\path{coach/pat} & Real PAT execution, mock execution for CI, text-output parsing, and PAT3-on-Mono compatibility handling. \\
+\path{coach/service.py} & End-to-end orchestration for prediction and strategy optimization. \\
+\path{coach/analysis} & Batch prediction, batch strategy, experiment orchestration, and plotting. \\
+\path{coach/backtest} & Leakage-safe walk-forward evaluation, calibration, baseline models, and feature-contract export. \\
+\path{scripts} & ShuttleSet ETL, PAT connectivity checks, inference-threshold validation, LLM smoke tests, and Redis key-management utilities. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The end-to-end workflow is as follows:
+
+\begin{itemize}
+\item A user submits a query through the CLI, chat interface, or FastAPI endpoint.
+\item The planner classifies the task as either \texttt{prediction/reachability} or \texttt{strategy/sensitivity}.
+\item The executor resolves the player names against the local player table and loads historical statistics from the local CSV adapter.
+\item \texttt{build\_matchup\_params()} converts those historical statistics into validated \texttt{MatchupParams}, including serve, receive, style, error, clutch, and recent-form features.
+\item \texttt{build\_matchup\_model()} injects those parameters into a generic PCSP\# template and writes both the rendered \path{matchup.pcsp} file and an auditable \path{params.json}.
+\item \texttt{run\_pat()} executes PAT in real mode or a deterministic surrogate in mock mode.
+\item The PAT text output is parsed, packaged into run artifacts, and summarized back into coaching language.
+\end{itemize}
+
+A subtle but important implementation detail is that the LLM plan is \emph{advisory and typed}, not sovereign. In \path{coach/agent/planner.py}, the plan is validated against a Pydantic schema, but \texttt{AgentExecutor.run()} does not literally interpret arbitrary tool strings from a model response. Instead, it uses the validated task type to call deterministic service methods. This sharply limits the scope for hallucinated execution steps.
+
+\begin{lstlisting}[style=code,language=Python,caption={Schema-constrained tool plan emitted for prediction queries in \texttt{coach/agent/planner.py}.}]
+tool_calls = [
+    ToolInstruction(tool="ResolvePlayers", arguments={"names": players}),
+    ToolInstruction(
+        tool="LoadStats",
+        arguments={
+            "playerA_id": "$playerA_id",
+            "playerB_id": "$playerB_id",
+            "window": window,
+            "source": "local",
+        },
+    ),
+    ToolInstruction(
+        tool="BuildModel",
+        arguments={
+            "params": "$params",
+            "template_name": "badminton_rally_template.pcsp",
+            "out_path": "$run_dir/matchup.pcsp",
+        },
+    ),
+    ToolInstruction(
+        tool="RunPAT",
+        arguments={
+            "pcsp_path": "$pcsp_path",
+            "pat_path": None,
+            "mode": mode,
+            "timeout_s": 60,
+        },
+    ),
+    ToolInstruction(
+        tool="SummarizeResults",
+        arguments={
+            "pat_outputs": "$pat_outputs",
+            "question": user_query,
+            "constraints": constraints,
+        },
+    ),
+]
+\end{lstlisting}
+
+\section{Part A: The Parametric Formal Model}
+The formal core of the repository is the template \path{coach/model/templates/badminton_rally_template.pcsp}. This file is explicitly designed as an \emph{injectable parametric model} rather than a matchup-specific script. No player-specific constants are hardcoded into the transition structure. Instead, all data-dependent quantities are inserted through placeholders such as \texttt{\{\{pA\_srv\_win\_w\}\}}, \texttt{\{\{serve\_mix\_A\_short\}\}}, and \texttt{\{\{target\}\}}.
+
+The transition from raw data to PAT-ready integers occurs in \path{coach/model/params.py}. The class \texttt{MatchupParams} computes effective rally probabilities through a structured combination of baseline serve/receive skill, style differentials, error proxies, return pressure, clutch performance, serve-type effectiveness, rally tolerance, stroke-profile effects, handedness, recent form, and rest. The model is therefore not a naive two-parameter Bernoulli abstraction; it is a compressed but multi-factor state model whose stochastic branches are then projected into the much simpler PCSP\# match automaton.
+
+A simplified reading of the implementation is:
+\[
+\Delta_{\text{style}} =
+w_{\text{short}}(s_A-s_B) +
+w_{\text{attack}}(a_A-a_B) -
+w_{\text{safe}}(\sigma_B-\sigma_A),
+\]
+and then
+\[
+p^{\text{srv}}_A = \operatorname{clamp}(\tilde{p}^{\text{srv}}_A + \Delta_{\text{serve}}),
+\qquad
+p^{\text{rcv}}_A = \operatorname{clamp}(\tilde{p}^{\text{rcv}}_A + \Delta_{\text{receive}}),
+\]
+where \(\tilde{p}\) is a reliability-weighted blend of player \(A\)'s own baseline and the complement of player \(B\)'s corresponding phase baseline. The full code further attenuates some features differently on serve and receive phases through fixed scale coefficients.
+
+Because PAT's \texttt{pcase} branches are encoded as integer weights, the floating probabilities are scaled by \(10{,}000\) before template injection.
+
+\begin{lstlisting}[style=code,language=Python,caption={Probability-to-weight translation in \texttt{coach/model/params.py}.}]
+eff = self.effective_probabilities()
+scale = 10000
+
+p_a_srv_w = int(round(eff["pA_srv_win"] * scale))
+p_a_rcv_w = int(round(eff["pA_rcv_win"] * scale))
+
+context = {
+    "target": self.target,
+    "cap": self.cap,
+    "best_of": self.best_of,
+    "games_to_win": (self.best_of // 2) + 1,
+    "pA_srv_win": f"{eff['pA_srv_win']:.6f}",
+    "pA_rcv_win": f"{eff['pA_rcv_win']:.6f}",
+    "pA_srv_win_w": p_a_srv_w,
+    "pA_srv_lose_w": scale - p_a_srv_w,
+    "pA_rcv_win_w": p_a_rcv_w,
+    "pA_rcv_lose_w": scale - p_a_rcv_w,
+}
+\end{lstlisting}
+
+The rendered PCSP\# model itself is compact. It tracks games, points, and current server; uses best-of-3 rules with target 21 and cap 30; and asserts the probability that player \(A\) reaches the winning terminal condition.
+
+\begin{lstlisting}[style=code,language=C,caption={Core of the parametric PCSP\# template in \texttt{coach/model/templates/badminton\_rally\_template.pcsp}.}]
+#define TARGET {{target}};
+#define CAP {{cap}};
+#define GAMES_TO_WIN {{games_to_win}};
+
+enum{A, B};
+
+var a_games = 0;
+var b_games = 0;
+var a_points = 0;
+var b_points = 0;
+var server = A;
+
+#define A_GameWin ((a_points >= TARGET && (a_points - b_points) >= 2) || a_points == CAP);
+#define B_GameWin ((b_points >= TARGET && (b_points - a_points) >= 2) || b_points == CAP);
+
+BadmintonMatch = Rally;
+
+Rally = [a_games < GAMES_TO_WIN && b_games < GAMES_TO_WIN]
+    ([server == A] ServeA [] [server == B] ServeB);
+
+ServeA = pcase {
+    {{pA_srv_win_w}}: AWinServe -> UpdateA
+    {{pA_srv_lose_w}}: BWinOnA -> UpdateB
+};
+
+ServeB = pcase {
+    {{pA_rcv_win_w}}: AWinReceive -> UpdateA
+    {{pA_rcv_lose_w}}: BWinServe -> UpdateB
+};
+
+#define A_WinsMatch a_games == GAMES_TO_WIN;
+#assert BadmintonMatch reaches A_WinsMatch with prob;
+\end{lstlisting}
+
+This design is the crucial bridge between LLM interaction and formal verification. The LLM never writes this process graph directly. Instead, it selects a task, while Python deterministically instantiates a validated stochastic model.
+
+\section{Part B: The Prediction Agent (Reachability Analysis)}
+Prediction queries are routed through the reachability pipeline. In the current implementation, a question such as ``What is the expected winning percentage for Viktor Axelsen vs Kento Momota?'' is handled by a plan whose semantics are: resolve players, load recent historical data, build a rendered PCSP\# model, run PAT, and summarize only the returned probability.
+
+The data mapping stage is richer than a simple win-loss lookup. The local CSV adapter in \path{coach/data/adapters/local_csv.py} constructs a player-centric perspective frame from match rows, computes recency weights with a 45-day half-life, applies Laplace smoothing to serve and receive outcomes, applies Dirichlet-style smoothing to serve and rally-style mixtures, and derives several tactical proxies:
+\begin{itemize}
+\item \texttt{unforced\_error\_rate}: a proxy based on attack rate, flick rate, safe rate, and point loss;
+\item \texttt{return\_pressure}: a clipped composite of receive win rate, attack share, and point share;
+\item \texttt{clutch\_point\_win}: a close-match measure based on close-score point share and smoothed close-match win rate;
+\item \texttt{short\_serve\_skill}, \texttt{long\_serve\_skill}, \texttt{rally\_tolerance}, \texttt{net\_error\_rate}, \texttt{out\_error\_rate}, \texttt{backhand\_rate}, and \texttt{aroundhead\_rate}.
+\end{itemize}
+
+The final matchup object is assembled in \path{coach/data/stats_builder.py}. Head-to-head information is blended into the baseline using
+\[
+\texttt{blend} = \min\!\left(0.35,\; \frac{\texttt{h2h\_matches}}{\texttt{h2h\_matches}+12}\right),
+\]
+which prevents small-sample head-to-head data from overwhelming the player-level priors.
+
+The reachability property is the same one encoded in the main template:
+\[
+\texttt{\#define A\_WinsMatch a\_games == GAMES\_TO\_WIN;}
+\qquad
+\texttt{\#assert BadmintonMatch reaches A\_WinsMatch with prob;}
+\]
+Hence the predicted winner is not a symbolic class label, but the player associated with the larger computed reachability probability. The auxiliary file \path{examples/minimal.pcsp} is used by \path{scripts/pat_check.py} as a smoke test to verify that PAT can successfully evaluate a minimal \texttt{reaches ... with prob} assertion before the full model is attempted.
+
+At execution time, the service delegates PAT invocation to \path{coach/pat/runner.py}. In real mode, PAT is called with the \texttt{-pcsp} flag; in mock mode, the project uses a deterministic surrogate that reads the rendered parameters and returns a monotonic logistic score. The parser in \path{coach/pat/parser.py} is deliberately tolerant: it recognizes strings such as \texttt{Probability = 0.123}, \texttt{with prob 0.123}, and interval outputs such as \texttt{Probability [0.6125, 0.6125]}.
+
+A reproduced mock-mode execution from the repository produced:
+\[
+P(\text{Viktor Axelsen beats Kento Momota}) = 0.497735.
+\]
+That value is not guessed by the LLM. It is produced after parameter construction, model rendering, mock PAT execution, and output parsing. The generated artifact \path{runs/predict\_20260401\_121705\_6fc9b874/matchup.pcsp} records the instantiated weights \(5110/4890\) for player \(A\)'s serve branch and \(4941/5059\) for player \(A\)'s receive branch.
+
+\section{Part C: The Strategy Agent (Sensitivity Analysis)}
+The strategy pipeline extends the prediction pipeline by repeatedly perturbing player \(A\)'s parameters, rerendering the model, and comparing the resulting reachability probability against the baseline. Importantly, the code does \emph{not} compute an analytic gradient from the PCSP\# process. Instead, it performs a discrete, finite-perturbation sensitivity search and interprets the observed
+\[
+\Delta P = P_{\text{candidate}} - P_{\text{baseline}}
+\]
+as a directional coaching signal. This is best understood as a gradient-like search, not symbolic differentiation.
+
+The core search logic resides in \path{coach/service.py}. The engine defines a search space over eight tactical knobs:
+\begin{itemize}
+\item short-serve share,
+\item attacking rally share,
+\item unforced-error proxy,
+\item return pressure,
+\item clutch-point win rate,
+\item serve-effectiveness proxy,
+\item terminal error profile,
+\item rally tolerance.
+\end{itemize}
+Single-knob moves and selected pairwise combinations are generated, deduplicated, and filtered by an \(L_1\) realism bound so that recommendations remain local rather than implausibly extreme.
+
+\begin{lstlisting}[style=code,language=Python,caption={Fine-grained candidate generation in \texttt{coach/service.py}.}]
+knob_steps: dict[str, list[float]] = {
+    "serve_short_delta": [-0.08, -0.05, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.05, 0.08],
+    "attack_delta": [-0.08, -0.05, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.05, 0.08],
+    "unforced_error_delta": [-0.06, -0.04, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04, 0.06],
+    "return_pressure_delta": [-0.06, -0.04, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04, 0.06],
+    "clutch_delta": [-0.04, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04],
+    "serve_effectiveness_delta": [-0.04, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04],
+    "error_profile_delta": [-0.04, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04],
+    "rally_tolerance_delta": [-0.04, -0.03, -0.02, -0.01, 0.01, 0.02, 0.03, 0.04],
+}
+pair_knobs = [
+    ("serve_short_delta", "attack_delta"),
+    ("serve_short_delta", "unforced_error_delta"),
+    ("serve_short_delta", "return_pressure_delta"),
+    ("attack_delta", "unforced_error_delta"),
+    ("attack_delta", "clutch_delta"),
+    ("return_pressure_delta", "clutch_delta"),
+    ("serve_effectiveness_delta", "error_profile_delta"),
+    ("serve_effectiveness_delta", "rally_tolerance_delta"),
+    ("error_profile_delta", "rally_tolerance_delta"),
+]
+\end{lstlisting}
+
+A second engineering choice makes the optimization computationally tractable: when the raw candidate set exceeds the search budget, the engine first scores candidates with a cheap surrogate, \texttt{mock\_probability(params.to\_template\_context())}, and only then evaluates the top-\(k\) candidates with the full PAT interface.
+
+\begin{lstlisting}[style=code,language=Python,caption={Budget pruning before exact PAT re-evaluation in \texttt{coach/service.py}.}]
+prepared: list[tuple[float, float, StrategyAdjustment, MatchupParams]] = []
+for candidate in candidates:
+    adjusted = candidate.apply_to(baseline)
+    prepared.append(
+        (
+            self._estimate_candidate_probability(adjusted),
+            adjusted.l1_change_from(baseline),
+            candidate,
+            adjusted,
+        )
+    )
+
+prepared.sort(key=lambda item: (-item[0], item[1]))
+return [(candidate, adjusted) for _, _, candidate, adjusted in prepared[:limit]]
+\end{lstlisting}
+
+For the reproduced Viktor Axelsen vs Kento Momota example, the generator produced 396 feasible candidates before budget pruning, with \(L_1\) changes ranging from \(0.01\) to \(0.16\). Under a budget of 20, the baseline probability was \(0.497735\), and the best returned candidate improved it to \(0.512490\), for a gain of \(0.014755\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrr}
+\toprule
+Rank & Key adjustment & Candidate probability & Improvement over baseline \\
+\midrule
+1 & \(\Delta\) short-serve share \(= +0.08\) & 0.512490 & \(+0.014755\) \\
+2 & \(\Delta\) unforced-error proxy \(= -0.06\) & 0.511867 & \(+0.014132\) \\
+3 & \(\Delta\) short-serve \(= +0.03,\ \Delta\) UE \(= -0.03\) & 0.510335 & \(+0.012600\) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This result illustrates the intended semantics of the strategy agent. The system does not say ``be more aggressive'' because such wording sounds plausible. It says, in effect: \emph{within a bounded neighborhood of the estimated parameter state, these controlled perturbations produce the largest positive change in reachability probability.} The natural-language advice is therefore the final layer of a quantitative sensitivity analysis.
+
+\section{Technical Implementation Details}
+\subsection*{Glue Code and Interface Layer}
+The orchestration logic is centralized in \path{coach/service.py}. The classes \texttt{PATExecution}, \texttt{PredictionResult}, \texttt{StrategyCandidate}, and \texttt{StrategyResult} provide typed payloads for every major pipeline stage. \path{main.py} simply delegates to \path{coach/cli.py}, whose commands expose prediction, strategy, direct PAT execution, interactive chat, and experiment batches. \path{coach/ui/app.py} mirrors the same prediction and strategy functionality over HTTP through \texttt{POST /predict} and \texttt{POST /strategy}. This gives the project three entry points while preserving a single authoritative service layer.
+
+\subsection*{Prompt Engineering and LLM API Usage}
+Prompt engineering is deliberately restrictive. The core instructions in \path{coach/agent/prompts.py} forbid numerical guessing and require tool-based reasoning. The Gemini wrapper in \path{coach/agent/llm\_client.py} uses temperature \(0.0\) for planning and \(0.2\) for summarization, and it parses responses as strict JSON whenever a plan is requested.
+
+\begin{lstlisting}[style=code,language=Python,caption={Prompt-engineering rules in \texttt{coach/agent/prompts.py}.}]
+SYSTEM_PROMPT = """You are the AI Badminton Coach planner.
+You must never guess probabilities. You must use tool outputs.
+Rules:
+1. For prediction questions, always generate tool calls that resolve players, load stats, build a PCSP model, and run PAT.
+2. For strategy questions, always include a sensitivity/optimization tool call and report quantified deltas.
+3. Return strict JSON only.
+4. If players are ambiguous, ask to resolve via ResolvePlayers tool first.
+"""
+
+def planner_prompt(user_query: str) -> str:
+    return (
+        "Produce a JSON plan with keys: task_type, analysis_type, players, constraints, tool_calls. "
+        f"User query: {user_query}"
+    )
+
+def summary_prompt(question: str, computed_payload: dict) -> str:
+    return (
+        "Use only computed outputs. Do not invent numbers. "
+        "Provide concise badminton coaching advice with quantified probabilities/deltas.\n"
+        f"Question: {question}\n"
+        f"Computed payload: {computed_payload}"
+    )
+\end{lstlisting}
+
+A further operational feature is the Redis-backed Gemini key queue. If Upstash Redis is configured, \texttt{LLMClient} rotates API keys globally across processes on quota errors such as HTTP 429 or 503. The scripts \path{scripts/seed\_redis\_keys.py}, \path{scripts/get\_redis\_keys.py}, \path{scripts/validate\_redis\_head.py}, \path{scripts/test\_redis\_rotation.py}, and \path{scripts/test\_llm\_client.py} support this deployment workflow.
+
+\subsection*{PAT Wrapper and Robust Execution}
+The PAT wrapper in \path{coach/pat/runner.py} supports both mock and real execution. Real execution resolves either a PAT executable path or a PAT installation directory, auto-detects whether Mono is required, writes stdout/stderr artifacts, and records structured metadata in \path{pat\_run.json}.
+
+\begin{lstlisting}[style=code,language=Python,caption={Command construction for real PAT execution in \texttt{coach/pat/runner.py}.}]
+def _build_pat_command(
+    *,
+    pat_console_path: Path,
+    pcsp_path: Path,
+    out_path: Path,
+    use_mono: bool,
+) -> list[str]:
+    if use_mono:
+        settings = CoachConfig.from_env()
+        return [settings.mono_path, str(pat_console_path), "-pcsp", str(pcsp_path), str(out_path)]
+    return [str(pat_console_path), "-pcsp", str(pcsp_path), str(out_path)]
+\end{lstlisting}
+
+A particularly notable engineering feature is PAT3-on-Mono compatibility handling. When PAT3 produces the known NESC startup failure signature, the runner clones the PAT runtime into a run-local directory, writes a small C\# shim (\texttt{nesc\_shim.cs}), compiles it with \texttt{mcs}, and retries execution. This is a strong example of repository-specific glue code: the project is not merely calling an external executable, but also repairing a real interoperability problem between PAT3 and Mono.
+
+The mock verifier in \path{coach/pat/mock\_pat.py} is equally important. It preserves monotonic behavior and enables CI, unit tests, and development-time experimentation without requiring a PAT installation. The repository is explicit about this separation: mock mode is an engineering surrogate, while real mode is the formal-verification path.
+
+\subsection*{Data Engineering, ETL, and Model Inputs}
+The data pipeline is implemented in \path{scripts/build\_real\_data.py} and configured by \path{scripts/shuttleset\_config.py}. These files translate ShuttleSet stroke-level logs into the shipped \path{coach/data/sample\_players.csv} and \path{coach/data/sample\_matches.csv}. Chinese shot labels are mapped to English, then to tactical categories \texttt{attack}, \texttt{neutral}, and \texttt{safe}. Additional enrichment computes average rally length, long-rally share, short- and long-serve effectiveness, stroke-profile rates, and terminal error rates. The ETL code also randomly swaps the \texttt{playerA/playerB} ordering so that the winner is not trivially encoded as ``side A,'' which is a sensible anti-bias choice.
+
+The schema is documented in \path{coach/data/schema.md}, while \path{coach/data/adapters/web\_source.py} provides a placeholder disk-cached adapter for future web integration. The current project, however, is intentionally local-first: the operative adapter is \texttt{LocalCSVAdapter}.
+
+\subsection*{Experimental Support, Backtesting, and Validation}
+The files \path{coach/analysis/batch\_predict.py}, \path{coach/analysis/batch\_strategy.py}, \path{coach/analysis/experiments.py}, and \path{coach/analysis/plots.py} provide reproducible experiment runners and static plots. The plotting code uses a headless Matplotlib backend and writes artifacts under the run directory.
+
+The most research-relevant evaluation code is in \path{coach/backtest}. \texttt{TimeMachineBacktester} builds point-in-time snapshot adapters, scores matches chronologically, compares the PCSP model against an Elo baseline and an online recent-form logistic model, and applies a rolling Platt calibrator. The feature-contract generator in \path{coach/backtest/feature\_contract.py} is especially valuable because it turns the implicit feature set into an explicit specification, including raw columns, computations, and inference requirements.
+
+A reproduced mock-mode walk-forward run over 12 matches beginning on 2020-01-01 produced the following calibrated metrics.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Model & Accuracy & Precision & Recall & Log loss \\
+\midrule
+PCSP & 0.7500 & 0.8000 & 0.6667 & 0.6771 \\
+Elo & 0.6667 & 0.6250 & 0.8333 & 0.6829 \\
+Recent-form logistic & 0.3333 & 0.3333 & 0.3333 & 0.7049 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These numbers come from the repository's own generated artifacts, not external benchmarks, and they should be read as development-time evidence because the run was executed in mock mode. Even so, they demonstrate that the codebase includes a serious experimental apparatus rather than only interactive demos.
+
+Validation is robust throughout the repository. The automated suite covers ETL enrichment, PAT parsing, PAT error signaling, model rendering, parameter constraints, end-to-end mock prediction and strategy behavior, service-level optimization logic, and time-machine backtesting. In the analyzed environment, all 66 tests passed. The support files \path{pyproject.toml}, \path{requirements.txt}, \path{pytest.ini}, \path{.ruff.toml}, \path{Makefile}, \path{.env.example}, and \path{.github/workflows/ci.yml} collectively define installation, linting, testing, PAT configuration, and CI behavior on Python 3.11 and 3.12. The repository also includes \path{README.md} and a shorter project summary in \path{REPORT.md}; the present document is a fuller academic reconstruction of the same implementation.
+
+\section{Conclusion}
+The codebase succeeds in building a practically useful bridge between LLM interaction and formal probabilistic reasoning. Its most important architectural decision is not merely that it ``uses an LLM'' and ``uses PAT,'' but that it assigns them sharply different epistemic roles. The LLM plans and explains; Python validates, compiles, and executes; PAT evaluates a formally stated reachability property; and the returned coaching advice is grounded in computed probabilities rather than stylistic plausibility.
+
+Several extensions are clearly enabled by the current design. The stubbed web adapter could be replaced with live data feeds; the current badminton template could be generalized into a family of sport-specific PCSP\# models; the strategy engine could move from bounded local perturbation search toward richer constrained optimization; and future evaluations should emphasize real PAT mode at larger scale. Even in its present form, however, the repository already demonstrates a coherent research contribution: natural-language sports analysis can be made substantially more trustworthy when the numerically decisive step is transferred from a black-box language model into an explicit probabilistic model-checking workflow.
+
+\end{document}
