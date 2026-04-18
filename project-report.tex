@@ -47,13 +47,13 @@
 \title{AI Sports Agent via LLM Tool Planning and Probabilistic Model Checking\\
 \large A Source-Code Analysis of the AI Badminton Coach}
 \author{}
-\date{April 1, 2026}
+\date{April 19, 2026}
 
 \begin{document}
 \maketitle
 
 \section{Abstract}
-This report analyzes the complete source code of an AI sports-agent project whose concrete implementation is an \emph{AI Badminton Coach}. The system operationalizes a principled division of labor between a large language model and a formal verification engine: the LLM is restricted to planning and explanation, while all match-winning probabilities are computed externally through a parametric PCSP\# model executed by PAT Console or, in development mode, by a deterministic mock verifier. The repository contains a full pipeline for player resolution, historical feature extraction, probabilistic model construction, strategy perturbation, backtesting, and artifact generation. The shipped dataset contains 27 players and 44 matches derived from ShuttleSet-style rally data. The codebase is supported by 66 passing automated tests, a leakage-safe backtesting harness, and CLI and HTTP interfaces. In reproduced mock-mode runs, the repository reports \(P(\text{Viktor Axelsen beats Kento Momota}) = 0.497735\), and a budgeted sensitivity search improves that value to \(0.512490\) through a quantified tactical adjustment. The overarching result is an auditable architecture in which natural-language interaction is retained, but the numerically critical reasoning path is moved into formal, executable, and inspectable model-checking machinery.
+This report analyzes the complete source code of an AI sports-agent project whose concrete implementation is an \emph{AI Badminton Coach}. The system operationalizes a principled division of labor between a large language model and a formal verification engine: the LLM is restricted to planning and explanation, while match-winning probabilities are computed externally through a parametric PCSP\# model executed by PAT Console or, in development mode, by a deterministic mock verifier. The repository contains a full pipeline for player resolution, historical feature extraction, schema-enriched ShuttleSet ETL, calibrated probability construction, strategy perturbation, backtesting, and artifact generation. The shipped dataset contains 27 players and 44 matches, and the codebase is supported by 66 passing automated tests, a leakage-aware time-machine backtesting harness, CLI and FastAPI interfaces, and auditable run directories that preserve rendered models, parameters, PAT outputs, and summaries. The overarching result is an inspectable architecture in which natural-language interaction is retained, but the numerically critical reasoning path is moved into typed Python parameterization and formal model-checking machinery.
 
 \section{Introduction}
 Probabilistic model checking (PMC) provides a mathematically explicit way to evaluate stochastic systems. Instead of asking a language model to estimate a probability directly, PMC encodes the system as a state-transition process with probabilistic branches and then evaluates temporal or reachability properties over that process. In this repository, PAT is the execution engine and PCSP\# is the modeling language used to express badminton match dynamics.
@@ -72,7 +72,7 @@ The repository is organized as a layered tool-using system rather than a monolit
 \toprule
 Repository slice & Responsibility \\
 \midrule
-\path{coach/agent} & Prompt engiprojectneering, Gemini client, JSON schemas, planning logic, and natural-language result synthesis. \\
+\path{coach/agent} & Prompt engineering, Gemini client, JSON schemas, planning logic, heuristic fallback, and natural-language result synthesis. \\
 \path{coach/data} & Local CSV adapter, ShuttleSet-derived schema, player lookup, feature estimation, cold-start priors, head-to-head blending, and influence-weight fitting. \\
 \path{coach/model} & Typed parameter validation, effective rally-probability computation, template rendering, and traceable parameter export. \\
 \path{coach/pat} & Real PAT execution, mock execution for CI, text-output parsing, and PAT3-on-Mono compatibility handling. \\
@@ -90,10 +90,10 @@ The end-to-end workflow is as follows:
 \item A user submits a query through the CLI, chat interface, or FastAPI endpoint.
 \item The planner classifies the task as either \texttt{prediction/reachability} or \texttt{strategy/sensitivity}.
 \item The executor resolves the player names against the local player table and loads historical statistics from the local CSV adapter.
-\item \texttt{build\_matchup\_params()} converts those historical statistics into validated \texttt{MatchupParams}, including serve, receive, style, error, clutch, and recent-form features.
+\item \texttt{build\_matchup\_params()} converts those historical statistics into validated \texttt{MatchupParams}, including serve, receive, style, error, clutch, serve-type, stroke-profile, handedness, reliability, recent-form, and rest features.
 \item \texttt{build\_matchup\_model()} injects those parameters into a generic PCSP\# template and writes both the rendered \path{matchup.pcsp} file and an auditable \path{params.json}.
 \item \texttt{run\_pat()} executes PAT in real mode or a deterministic surrogate in mock mode.
-\item The PAT text output is parsed, packaged into run artifacts, and summarized back into coaching language.
+\item The PAT text output is parsed, packaged into run artifacts such as \path{inputs.json}, \path{stats.json}, \path{summary.json}, and stdout/stderr logs, and summarized back into coaching language.
 \end{itemize}
 
 A subtle but important implementation detail is that the LLM plan is \emph{advisory and typed}, not sovereign. In \path{coach/agent/planner.py}, the plan is validated against a Pydantic schema, but \texttt{AgentExecutor.run()} does not literally interpret arbitrary tool strings from a model response. Instead, it uses the validated task type to call deterministic service methods. This sharply limits the scope for hallucinated execution steps.
@@ -141,7 +141,7 @@ tool_calls = [
 \section{Part A: The Parametric Formal Model}
 The formal core of the repository is the template \path{coach/model/templates/badminton_rally_template.pcsp}. This file is explicitly designed as an \emph{injectable parametric model} rather than a matchup-specific script. No player-specific constants are hardcoded into the transition structure. Instead, all data-dependent quantities are inserted through placeholders such as \texttt{\{\{pA\_srv\_win\_w\}\}}, \texttt{\{\{serve\_mix\_A\_short\}\}}, and \texttt{\{\{target\}\}}.
 
-The transition from raw data to PAT-ready integers occurs in \path{coach/model/params.py}. The class \texttt{MatchupParams} computes effective rally probabilities through a structured combination of baseline serve/receive skill, style differentials, error proxies, return pressure, clutch performance, serve-type effectiveness, rally tolerance, stroke-profile effects, handedness, recent form, and rest. The model is therefore not a naive two-parameter Bernoulli abstraction; it is a compressed but multi-factor state model whose stochastic branches are then projected into the much simpler PCSP\# match automaton.
+The transition from raw data to PAT-ready integers occurs in \path{coach/model/params.py}. The class \texttt{MatchupParams} computes effective rally probabilities through a structured combination of baseline serve/receive skill, style differentials, error proxies, return pressure, clutch performance, serve-type effectiveness, rally tolerance, stroke-profile effects, handedness, reliability, recent form, and rest. The important modeling distinction is that the \emph{checked-in PCSP template remains intentionally compact}: it is still a serve/receive match automaton with a small number of probabilistic branches. The richer tactical information is currently injected \emph{upstream} into the effective probabilities computed in Python rather than represented as separate explicit PAT states. This design keeps the formal process graph manageable while still allowing the matchup parameters to be data-rich and auditable.
 
 A simplified reading of the implementation is:
 \[
@@ -220,6 +220,36 @@ ServeB = pcase {
 
 This design is the crucial bridge between LLM interaction and formal verification. The LLM never writes this process graph directly. Instead, it selects a task, while Python deterministically instantiates a validated stochastic model.
 
+\subsection*{Current Matchup Parameterization Beyond Serve/Receive Baselines}
+Although the checked-in PCSP\# graph is compact, the current parameterization layer is substantially richer than a plain two-parameter lookup. In the present codebase, \texttt{MatchupParams} combines baseline serve and receive strength, serve and rally-style differentials, error profile, return pressure, clutch, serve-type effectiveness, rally tolerance, stroke profile, handedness, reliability, recent form, and rest. Baseline phase probabilities are themselves blended in a reliability-aware manner using both player \(A\)'s own phase record and the complement of player \(B\)'s corresponding phase strength. Influence weights are then fit by ridge-regularized regression on pre-match historical snapshots, which reduces same-match leakage and dampens small-sample instability.
+
+In other words, the formal model exposed to PAT remains small, but the numerical inputs to that model are calibrated from a multi-factor historical representation. This is why the repository should be understood as a compact probabilistic model checker fed by a richer statistical front-end, rather than as a hand-tuned two-number model.
+
+\begin{lstlisting}[style=code,language=Python,caption={Representative fields in the current parameter schema from \texttt{coach/model/params.py}.}]
+class InfluenceWeights(BaseModel):
+    w_serve_type: float = Field(default=0.03, ge=0.0, le=0.08)
+    w_rally_tolerance: float = Field(default=0.02, ge=0.0, le=0.08)
+    w_error_profile: float = Field(default=0.03, ge=0.0, le=0.08)
+    w_handedness: float = Field(default=0.01, ge=0.0, le=0.08)
+    w_backhand: float = Field(default=0.01, ge=0.0, le=0.08)
+    w_aroundhead: float = Field(default=0.01, ge=0.0, le=0.08)
+    w_recent_form: float = Field(default=0.06, ge=0.0, le=0.12)
+    w_rest: float = Field(default=0.03, ge=0.0, le=0.1)
+
+class PlayerParams(BaseModel):
+    short_serve_skill: float = Field(default=0.5, ge=0.01, le=0.99)
+    long_serve_skill: float = Field(default=0.5, ge=0.01, le=0.99)
+    rally_tolerance: float = Field(default=0.5, ge=0.01, le=0.99)
+    net_error_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    out_error_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    backhand_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    aroundhead_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    handedness_flag: float = Field(default=0.0, ge=0.0, le=1.0)
+    reliability: float = Field(default=1.0, ge=0.0, le=1.0)
+    recent_form: float = Field(default=0.5, ge=0.01, le=0.99)
+    rest_days: float = Field(default=7.0, ge=0.0, le=90.0)
+\end{lstlisting}
+
 \section{Part B: The Prediction Agent (Reachability Analysis)}
 Prediction queries are routed through the reachability pipeline. In the current implementation, a question such as ``What is the expected winning percentage for Viktor Axelsen vs Kento Momota?'' is handled by a plan whose semantics are: resolve players, load recent historical data, build a rendered PCSP\# model, run PAT, and summarize only the returned probability.
 
@@ -228,14 +258,17 @@ The data mapping stage is richer than a simple win-loss lookup. The local CSV ad
 \item \texttt{unforced\_error\_rate}: a proxy based on attack rate, flick rate, safe rate, and point loss;
 \item \texttt{return\_pressure}: a clipped composite of receive win rate, attack share, and point share;
 \item \texttt{clutch\_point\_win}: a close-match measure based on close-score point share and smoothed close-match win rate;
-\item \texttt{short\_serve\_skill}, \texttt{long\_serve\_skill}, \texttt{rally\_tolerance}, \texttt{net\_error\_rate}, \texttt{out\_error\_rate}, \texttt{backhand\_rate}, and \texttt{aroundhead\_rate}.
+\item \texttt{short\_serve\_skill}, \texttt{long\_serve\_skill}, and \texttt{rally\_tolerance};
+\item \texttt{net\_error\_rate}, \texttt{out\_error\_rate}, \texttt{backhand\_rate}, and \texttt{aroundhead\_rate};
+\item \texttt{handedness\_flag} and \texttt{reliability};
+\item \texttt{recent\_form} and \texttt{rest\_days}.
 \end{itemize}
 
 The final matchup object is assembled in \path{coach/data/stats_builder.py}. Head-to-head information is blended into the baseline using
 \[
 \texttt{blend} = \min\!\left(0.35,\; \frac{\texttt{h2h\_matches}}{\texttt{h2h\_matches}+12}\right),
 \]
-which prevents small-sample head-to-head data from overwhelming the player-level priors.
+which prevents small-sample head-to-head data from overwhelming the player-level priors. The same layer also estimates influence weights from pre-match historical snapshots using ridge-style regularization, so the eventual serve/receive probabilities are shaped by both domain priors and data-driven calibration.
 
 The reachability property is the same one encoded in the main template:
 \[
@@ -247,11 +280,7 @@ Hence the predicted winner is not a symbolic class label, but the player associa
 
 At execution time, the service delegates PAT invocation to \path{coach/pat/runner.py}. In real mode, PAT is called with the \texttt{-pcsp} flag; in mock mode, the project uses a deterministic surrogate that reads the rendered parameters and returns a monotonic logistic score. The parser in \path{coach/pat/parser.py} is deliberately tolerant: it recognizes strings such as \texttt{Probability = 0.123}, \texttt{with prob 0.123}, and interval outputs such as \texttt{Probability [0.6125, 0.6125]}.
 
-A reproduced mock-mode execution from the repository produced:
-\[
-P(\text{Viktor Axelsen beats Kento Momota}) = 0.497735.
-\]
-That value is not guessed by the LLM. It is produced after parameter construction, model rendering, mock PAT execution, and output parsing. The generated artifact \path{runs/predict\_20260401\_121705\_6fc9b874/matchup.pcsp} records the instantiated weights \(5110/4890\) for player \(A\)'s serve branch and \(4941/5059\) for player \(A\)'s receive branch.
+The key point is that the prediction pipeline produces more than a final scalar probability. For each run, the repository writes the rendered \path{matchup.pcsp} model, \path{params.json}, \path{stats.json}, PAT stdout/stderr, the PAT text output, and a summary record. The prediction is therefore reproducible and inspectable at every stage: historical inputs, parameter estimates, formal model instantiation, and final reachability output are all preserved as first-class artifacts.
 
 \section{Part C: The Strategy Agent (Sensitivity Analysis)}
 The strategy pipeline extends the prediction pipeline by repeatedly perturbing player \(A\)'s parameters, rerendering the model, and comparing the resulting reachability probability against the baseline. Importantly, the code does \emph{not} compute an analytic gradient from the PCSP\# process. Instead, it performs a discrete, finite-perturbation sensitivity search and interprets the observed
@@ -297,7 +326,7 @@ pair_knobs = [
 ]
 \end{lstlisting}
 
-A second engineering choice makes the optimization computationally tractable: when the raw candidate set exceeds the search budget, the engine first scores candidates with a cheap surrogate, \texttt{mock\_probability(params.to\_template\_context())}, and only then evaluates the top-\(k\) candidates with the full PAT interface.
+A second engineering choice makes the optimization computationally tractable: when the raw candidate set exceeds the search budget, the engine first scores candidates with a cheap surrogate, \texttt{mock\_probability(params.to\_template\_context())}, and only then evaluates the top-\(k\) candidates with the full PAT interface. This pre-ranking step does not replace PAT; rather, it acts as a budget-preserving filter before exact re-evaluation.
 
 \begin{lstlisting}[style=code,language=Python,caption={Budget pruning before exact PAT re-evaluation in \texttt{coach/service.py}.}]
 prepared: list[tuple[float, float, StrategyAdjustment, MatchupParams]] = []
@@ -316,30 +345,27 @@ prepared.sort(key=lambda item: (-item[0], item[1]))
 return [(candidate, adjusted) for _, _, candidate, adjusted in prepared[:limit]]
 \end{lstlisting}
 
-For the reproduced Viktor Axelsen vs Kento Momota example, the generator produced 396 feasible candidates before budget pruning, with \(L_1\) changes ranging from \(0.01\) to \(0.16\). Under a budget of 20, the baseline probability was \(0.497735\), and the best returned candidate improved it to \(0.512490\), for a gain of \(0.014755\).
-
-\begin{table}[H]
-\centering
-\small
-\begin{tabular}{rrrr}
-\toprule
-Rank & Key adjustment & Candidate probability & Improvement over baseline \\
-\midrule
-1 & \(\Delta\) short-serve share \(= +0.08\) & 0.512490 & \(+0.014755\) \\
-2 & \(\Delta\) unforced-error proxy \(= -0.06\) & 0.511867 & \(+0.014132\) \\
-3 & \(\Delta\) short-serve \(= +0.03,\ \Delta\) UE \(= -0.03\) & 0.510335 & \(+0.012600\) \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-This result illustrates the intended semantics of the strategy agent. The system does not say ``be more aggressive'' because such wording sounds plausible. It says, in effect: \emph{within a bounded neighborhood of the estimated parameter state, these controlled perturbations produce the largest positive change in reachability probability.} The natural-language advice is therefore the final layer of a quantitative sensitivity analysis.
+Rather than hardcoding a single reproduced branch-specific strategy result into the paper, the more accurate claim is procedural: the engine generates a local set of feasible candidates, ranks them under a bounded search budget, reruns PAT on the top candidates, and returns both the best adjustment and a ranked list of alternatives. The system therefore does not say ``be more aggressive'' merely because the phrase sounds plausible. It says, in effect: \emph{within a bounded neighborhood of the estimated parameter state, these controlled perturbations produce the largest positive change in reachability probability.} The natural-language advice is therefore the final layer of a quantitative sensitivity analysis.
 
 \section{Technical Implementation Details}
 \subsection*{Glue Code and Interface Layer}
-The orchestration logic is centralized in \path{coach/service.py}. The classes \texttt{PATExecution}, \texttt{PredictionResult}, \texttt{StrategyCandidate}, and \texttt{StrategyResult} provide typed payloads for every major pipeline stage. \path{main.py} simply delegates to \path{coach/cli.py}, whose commands expose prediction, strategy, direct PAT execution, interactive chat, and experiment batches. \path{coach/ui/app.py} mirrors the same prediction and strategy functionality over HTTP through \texttt{POST /predict} and \texttt{POST /strategy}. This gives the project three entry points while preserving a single authoritative service layer.
+The orchestration logic is centralized in \path{coach/service.py}. The classes \texttt{PATExecution}, \texttt{PredictionResult}, \texttt{StrategyCandidate}, and \texttt{StrategyResult} provide typed payloads for every major pipeline stage. \path{main.py} simply delegates to \path{coach/cli.py}. This gives the project multiple entry points while preserving a single authoritative service layer.
+
+\subsection*{Service Surfaces and Deployment Interfaces}
+The repository currently exposes a richer deployment surface than a single command-line tool. The CLI entry points include \texttt{coach predict}, \texttt{coach strategy}, \texttt{coach pat-run}, \texttt{coach chat}, \texttt{coach experiments}, and the dedicated backtesting entry point \texttt{coach-backtest}. On the HTTP side, \path{coach/ui/app.py} exposes a FastAPI application with a landing page, a player-list endpoint, prediction and strategy endpoints, and a chat endpoint that delegates to the same typed planning/execution stack.
+
+\begin{lstlisting}[style=code,language=Python,caption={Current FastAPI route surface in \texttt{coach/ui/app.py}.}]
+@app.get("/", response_class=HTMLResponse)
+@app.get("/players")
+@app.post("/predict")
+@app.post("/strategy")
+@app.post("/chat")
+\end{lstlisting}
+
+Deployment configuration is environment-driven through \path{coach/config.py}. PAT execution is controlled by \texttt{PAT\_CONSOLE\_PATH}, \texttt{PAT\_USE\_MONO}, \texttt{MONO\_PATH}, \texttt{PAT\_TIMEOUT\_S}, and \texttt{RUNS\_DIR}. LLM integration is optional: if Gemini credentials are not present, the planner falls back to deterministic heuristic planning. When Upstash Redis is configured, the Gemini client can rotate keys globally across processes after quota errors, which gives the system a practical multi-process deployment path beyond local experimentation.
 
 \subsection*{Prompt Engineering and LLM API Usage}
-Prompt engineering is deliberately restrictive. The core instructions in \path{coach/agent/prompts.py} forbid numerical guessing and require tool-based reasoning. The Gemini wrapper in \path{coach/agent/llm\_client.py} uses temperature \(0.0\) for planning and \(0.2\) for summarization, and it parses responses as strict JSON whenever a plan is requested.
+Prompt engineering is deliberately restrictive. The core instructions in \path{coach/agent/prompts.py} forbid numerical guessing and require tool-based reasoning. The Gemini wrapper in \path{coach/agent/llm\_client.py} uses temperature \(0.0\) for planning and \(0.2\) for summarization, and it parses responses as strict JSON whenever a plan is requested. Crucially, the planner is optional rather than mandatory: if no working Gemini client is available, the repository still produces structured plans through a deterministic fallback path in \path{coach/agent/planner.py}. This means the repository remains operable without online LLM access.
 
 \begin{lstlisting}[style=code,language=Python,caption={Prompt-engineering rules in \texttt{coach/agent/prompts.py}.}]
 SYSTEM_PROMPT = """You are the AI Badminton Coach planner.
@@ -394,30 +420,89 @@ The data pipeline is implemented in \path{scripts/build\_real\_data.py} and conf
 
 The schema is documented in \path{coach/data/schema.md}, while \path{coach/data/adapters/web\_source.py} provides a placeholder disk-cached adapter for future web integration. The current project, however, is intentionally local-first: the operative adapter is \texttt{LocalCSVAdapter}.
 
+\subsection*{Schema-Enriched Match Features}
+The current \path{sample\_matches.csv} schema is more informative than a minimal serve/receive log. In addition to serve counts, points, and style mixtures, the ETL now preserves match metadata and several tactical/context features that are later aggregated into player-history statistics by the local adapter.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{L{0.22\linewidth}L{0.70\linewidth}}
+\toprule
+Feature group & Current columns in \path{sample\_matches.csv} \\
+\midrule
+Metadata & \texttt{tournament}, \texttt{round}, \texttt{duration\_min}, \texttt{match\_sets} \\
+Rally context & \texttt{avg\_rally\_len}, \texttt{long\_rally\_share} \\
+Serve-type effectiveness & \texttt{a/b\_short\_serve\_win\_rate}, \texttt{a/b\_long\_serve\_win\_rate}, \texttt{a/b\_short\_serve\_samples}, \texttt{a/b\_long\_serve\_samples} \\
+Stroke profile & \texttt{a/b\_backhand\_rate}, \texttt{a/b\_aroundhead\_rate} \\
+Terminal error profile & \texttt{a/b\_net\_error\_lost\_rate}, \texttt{a/b\_out\_error\_lost\_rate} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These are still match-level aggregates rather than raw rally-state traces, but they substantially improve the descriptive power of the historical record. The adapter later converts them into player-centric features such as \texttt{short\_serve\_skill}, \texttt{rally\_tolerance}, and stroke-profile or terminal-error metrics over a rolling historical window.
+
+\subsection*{Reproducibility and Audit Artifacts}
+Every prediction, strategy, direct PAT run, and backtest writes an auditable run directory under \path{runs/<run\_id>/}. These directories are not incidental logs; they are part of the design of the system. They preserve the exact inputs, intermediate parameter state, rendered PCSP\# model, PAT outputs, and final summaries needed to inspect or reproduce a run.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{L{0.24\linewidth}L{0.66\linewidth}}
+\toprule
+Artifact & Purpose \\
+\midrule
+\path{inputs.json} & Records task type, players, mode, window, and run metadata. \\
+\path{stats.json} & Stores player-level historical statistics, head-to-head data, and fitted weights. \\
+\path{params.json} & Stores validated \texttt{MatchupParams}, exported template context, and effective probabilities. \\
+\path{prediction\_result.json} / \path{strategy\_result.json} & Stores the structured result payload returned by the service layer. \\
+\path{summary.json} & Stores the concise end-user summary and core probability outputs. \\
+Rendered \path{.pcsp} files & Preserve the exact formal model sent to PAT. \\
+\path{pat\_stdout.txt}, \path{pat\_stderr.txt}, \path{pat\_output.txt}, \path{pat\_run.json} & Preserve PAT execution traces, parsed outputs, and command metadata. \\
+\path{top\_alternatives.csv} & Stores ranked strategy alternatives for sensitivity runs. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This artifact trail is a central strength of the repository. The project is not only producing a final answer; it is preserving the exact intermediate model and parameter state needed for later inspection, debugging, and empirical comparison.
+
 \subsection*{Experimental Support, Backtesting, and Validation}
 The files \path{coach/analysis/batch\_predict.py}, \path{coach/analysis/batch\_strategy.py}, \path{coach/analysis/experiments.py}, and \path{coach/analysis/plots.py} provide reproducible experiment runners and static plots. The plotting code uses a headless Matplotlib backend and writes artifacts under the run directory.
 
 The most research-relevant evaluation code is in \path{coach/backtest}. \texttt{TimeMachineBacktester} builds point-in-time snapshot adapters, scores matches chronologically, compares the PCSP model against an Elo baseline and an online recent-form logistic model, and applies a rolling Platt calibrator. The feature-contract generator in \path{coach/backtest/feature\_contract.py} is especially valuable because it turns the implicit feature set into an explicit specification, including raw columns, computations, and inference requirements.
 
-A reproduced mock-mode walk-forward run over 12 matches beginning on 2020-01-01 produced the following calibrated metrics.
-
 \begin{table}[H]
 \centering
 \small
-\begin{tabular}{lrrrr}
+\begin{tabular}{L{0.24\linewidth}L{0.62\linewidth}}
 \toprule
-Model & Accuracy & Precision & Recall & Log loss \\
+Evaluation component & Role \\
 \midrule
-PCSP & 0.7500 & 0.8000 & 0.6667 & 0.6771 \\
-Elo & 0.6667 & 0.6250 & 0.8333 & 0.6829 \\
-Recent-form logistic & 0.3333 & 0.3333 & 0.3333 & 0.7049 \\
+PCSP model & Main reachability-based prediction pipeline under PAT or mock execution. \\
+Elo baseline & Lightweight rating baseline for comparative evaluation. \\
+Recent-form logistic model & Online learned baseline over a compact feature vector derived from matchup parameters. \\
+Rolling Platt calibrator & Probability calibration layer applied across models in walk-forward evaluation. \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-These numbers come from the repository's own generated artifacts, not external benchmarks, and they should be read as development-time evidence because the run was executed in mock mode. Even so, they demonstrate that the codebase includes a serious experimental apparatus rather than only interactive demos.
+Rather than relying on a single one-off score, the backtesting stack is designed to evaluate the repository chronologically under explicit leakage controls. This makes the evaluation story more compelling than a simple interactive demo, even when some experiments are run in mock mode for engineering convenience.
+
+\subsection*{Cold-Start Handling and Leakage Control}
+Leakage control is one of the most important research-facing strengths of the repository and should be read as a first-class design choice rather than an implementation detail. In backtesting mode, \texttt{TimeMachineBacktester} creates point-in-time snapshot adapters so that each match is scored using only information available before the match cutoff. Historical statistics are computed strictly from pre-cutoff matches, and influence weights are fit from pre-match player-history snapshots rather than same-match labels. This sharply reduces temporal leakage in both player-level features and weight estimation.
+
+The codebase also distinguishes between production prediction and evaluation-oriented cold-start handling. The normal prediction path is comparatively strict: if there is no meaningful historical basis for a player, the system raises a failure rather than silently fabricating a profile. In contrast, the backtester can optionally enable cold-start fallback so that chronological evaluation can proceed on sparse early-history cases. This distinction is methodologically sensible because it preserves the honesty of live prediction while still allowing a realistic walk-forward evaluation protocol.
+
+\subsection*{Feature Contract for Inference and Evaluation}
+The file \path{coach/backtest/feature\_contract.py} turns the system's implicit feature assumptions into an explicit inference contract. It enumerates template-context outputs, player-level features, weight features, source tables, raw columns, and the computation used to derive each field. This is unusually valuable for a repository of this size. It means the model is not only implemented, but also documented in a machine-readable and human-readable form that can support auditing, future model replacement, and downstream reproducibility.
 
 Validation is robust throughout the repository. The automated suite covers ETL enrichment, PAT parsing, PAT error signaling, model rendering, parameter constraints, end-to-end mock prediction and strategy behavior, service-level optimization logic, and time-machine backtesting. In the analyzed environment, all 66 tests passed. The support files \path{pyproject.toml}, \path{requirements.txt}, \path{pytest.ini}, \path{.ruff.toml}, \path{Makefile}, \path{.env.example}, and \path{.github/workflows/ci.yml} collectively define installation, linting, testing, PAT configuration, and CI behavior on Python 3.11 and 3.12. The repository also includes \path{README.md} and a shorter project summary in \path{REPORT.md}; the present document is a fuller academic reconstruction of the same implementation.
+
+\section{Limitations and Threats to Validity}
+Several limitations remain and should be stated explicitly. First, the shipped dataset is still very small: 27 players and 44 matches. This is sufficient for a meaningful systems case study, but it is not large enough to justify strong claims of broad statistical generalization. Second, many tactical inputs are aggregate proxies rather than true rally-state dynamics. Features such as unforced-error rate, return pressure, serve-type effectiveness, and rally tolerance are useful abstractions, but they are still compressed summaries of richer match behavior.
+
+Third, the formal model and the upstream parameterization layer operate at different levels of detail. The checked-in PCSP\# template is intentionally simpler than the Python feature pipeline; it models a compact serve/receive match automaton rather than explicitly representing richer tactical state transitions such as stroke type, rally phase, or geometric court position. This is a defensible engineering tradeoff, but it also bounds what can be claimed about the formal model itself. Fourth, some features depend on sparse terminal-event labels such as \texttt{lose\_reason}, so they should be read as directional signals rather than exhaustive causal explanations.
+
+Finally, mock mode is a useful engineering surrogate for CI, development, and search-budget pruning, but it is not formal verification. Exact probability claims should therefore be tied either to reproduced real PAT runs or to clearly labeled mock-mode experiments. More generally, any hardcoded benchmark number in this repository should be treated as development-time evidence unless it is connected to a reproducible run artifact on the current branch.
 
 \section{Conclusion}
 The codebase succeeds in building a practically useful bridge between LLM interaction and formal probabilistic reasoning. Its most important architectural decision is not merely that it ``uses an LLM'' and ``uses PAT,'' but that it assigns them sharply different epistemic roles. The LLM plans and explains; Python validates, compiles, and executes; PAT evaluates a formally stated reachability property; and the returned coaching advice is grounded in computed probabilities rather than stylistic plausibility.
