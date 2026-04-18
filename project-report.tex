@@ -62,6 +62,9 @@ This design responds to a fundamental weakness of ordinary LLM-only sports assis
 
 The codebase addresses this problem by turning the LLM into a \emph{tool-using planner} rather than a calculator. The current implementation does \emph{not} let the LLM generate arbitrary PCSP\# syntax token by token. Instead, the LLM is constrained to produce typed JSON plans, after which deterministic Python code resolves players, computes features from historical data, injects parameters into a generic PCSP\# template, runs PAT, and finally summarizes the computed result. The repository therefore instantiates a broader ``AI Sports Agent'' concept with a badminton-specific case study that is technically rigorous and directly auditable.
 
+\subsection*{Concrete Contributions of the Repository}
+The repository makes several concrete contributions that are stronger than a generic ``LLM plus simulator'' design. First, it uses typed LLM-to-tool planning rather than free-form code or model generation, which sharply narrows the space for hallucinated execution. Second, it implements a ShuttleSet-to-match ETL pipeline that converts stroke-level badminton logs into an enriched historical schema suitable for downstream inference. Third, it couples a calibrated upstream parameterization layer with a downstream formal reachability model, so that rich historical features can influence prediction without requiring the language model to manipulate the formal system directly. Fourth, it provides a leakage-aware walk-forward evaluation harness with explicit point-in-time snapshots, baseline comparisons, and probability calibration. Fifth, it preserves full run artifacts, which makes the system inspectable as a research object rather than only as an interactive demo.
+
 \section{System Architecture}
 The repository is organized as a layered tool-using system rather than a monolithic chatbot. The control surfaces are \path{main.py}, \path{coach/cli.py}, and \path{coach/ui/app.py}; the planning layer lives in \path{coach/agent}; the data and model layers live in \path{coach/data} and \path{coach/model}; PAT integration lives in \path{coach/pat}; and evaluation and experimentation are implemented in \path{coach/analysis} and \path{coach/backtest}.
 
@@ -364,6 +367,9 @@ The repository currently exposes a richer deployment surface than a single comma
 
 Deployment configuration is environment-driven through \path{coach/config.py}. PAT execution is controlled by \texttt{PAT\_CONSOLE\_PATH}, \texttt{PAT\_USE\_MONO}, \texttt{MONO\_PATH}, \texttt{PAT\_TIMEOUT\_S}, and \texttt{RUNS\_DIR}. LLM integration is optional: if Gemini credentials are not present, the planner falls back to deterministic heuristic planning. When Upstash Redis is configured, the Gemini client can rotate keys globally across processes after quota errors, which gives the system a practical multi-process deployment path beyond local experimentation.
 
+\subsection*{Interactive User Experience Layer}
+The user interface layer is intentionally thin. The browser landing page served at \texttt{GET /} is a convenience shell over the same typed backend used by the CLI, not a separate inference path. \texttt{GET /players} exposes the local player registry for autocomplete and validation, while \texttt{POST /predict} and \texttt{POST /strategy} accept structured request payloads that map directly to the service layer. The chat endpoint, \texttt{POST /chat}, shares the same deterministic execution pipeline after planning, so the web experience does not bypass the underlying constraints on player resolution, model building, or PAT execution. This is an important architectural property: the interface is flexible, but the numerically decisive backend remains the same across surfaces.
+
 \subsection*{Prompt Engineering and LLM API Usage}
 Prompt engineering is deliberately restrictive. The core instructions in \path{coach/agent/prompts.py} forbid numerical guessing and require tool-based reasoning. The Gemini wrapper in \path{coach/agent/llm\_client.py} uses temperature \(0.0\) for planning and \(0.2\) for summarization, and it parses responses as strict JSON whenever a plan is requested. Crucially, the planner is optional rather than mandatory: if no working Gemini client is available, the repository still produces structured plans through a deterministic fallback path in \path{coach/agent/planner.py}. This means the repository remains operable without online LLM access.
 
@@ -465,6 +471,22 @@ Rendered \path{.pcsp} files & Preserve the exact formal model sent to PAT. \\
 
 This artifact trail is a central strength of the repository. The project is not only producing a final answer; it is preserving the exact intermediate model and parameter state needed for later inspection, debugging, and empirical comparison.
 
+\subsection*{Minimal Reproduction Workflow}
+The repository is also straightforward to exercise from the command line. A minimal prediction run can be reproduced with \texttt{coach predict --a "Viktor Axelsen" --b "Kento Momota" --mode mock}, while a sensitivity run can be reproduced with \texttt{coach strategy --a "Viktor Axelsen" --b "Kento Momota" --mode mock}. Leakage-aware evaluation can be reproduced with \texttt{coach-backtest run --mode mock}. If PAT is installed and configured through \texttt{PAT\_CONSOLE\_PATH}, the same commands can be rerun with \texttt{--mode real}. The most useful files to inspect after prediction or strategy are the rendered \path{matchup.pcsp}, \path{params.json}, \path{stats.json}, and \path{summary.json}; after backtesting, the key summary artifact is \path{metrics.json}, supplemented by CSV outputs for predictions, skipped cases, and calibration summaries.
+
+\begin{lstlisting}[style=code,language=bash,caption={Minimal reproduction commands for prediction, strategy, and backtesting.}]
+coach predict --a "Viktor Axelsen" --b "Kento Momota" --mode mock
+coach strategy --a "Viktor Axelsen" --b "Kento Momota" --mode mock
+coach-backtest run --mode mock
+
+# Optional if PAT is installed and configured
+coach predict --a "Viktor Axelsen" --b "Kento Momota" --mode real
+coach strategy --a "Viktor Axelsen" --b "Kento Momota" --mode real
+\end{lstlisting}
+
+\subsection*{A Single-Run Audit Trail}
+One useful way to understand the system is to follow a single prediction run as an audit trail rather than as an opaque API call. A run begins with player resolution against the local registry, after which the adapter assembles player-centric historical frames and derives recent-form, serve, receive, style, and tactical proxy features. These statistics are then converted into validated \texttt{MatchupParams}, exported to \path{params.json}, and rendered into a concrete \path{matchup.pcsp} instance. PAT or the mock verifier is then executed against that rendered model, and the resulting probability is written alongside the original historical statistics in \path{stats.json}, the parsed PAT output, and a concise \path{summary.json}. The important point is not a single branch-specific number, but that the repository makes every stage of the computational path visible and inspectable after the run completes.
+
 \subsection*{Experimental Support, Backtesting, and Validation}
 The files \path{coach/analysis/batch\_predict.py}, \path{coach/analysis/batch\_strategy.py}, \path{coach/analysis/experiments.py}, and \path{coach/analysis/plots.py} provide reproducible experiment runners and static plots. The plotting code uses a headless Matplotlib backend and writes artifacts under the run directory.
 
@@ -487,13 +509,66 @@ Rolling Platt calibrator & Probability calibration layer applied across models i
 
 Rather than relying on a single one-off score, the backtesting stack is designed to evaluate the repository chronologically under explicit leakage controls. This makes the evaluation story more compelling than a simple interactive demo, even when some experiments are run in mock mode for engineering convenience.
 
+\subsection*{Evaluation Methodology}
+The evaluation protocol is walk-forward and chronological rather than based on a random train/test split. \texttt{TimeMachineBacktester} first prepares matches in date order, then constructs a point-in-time snapshot adapter for each match cutoff so that every scored prediction uses only information available before that match. This is a more faithful protocol for sports forecasting than random shuffling because it preserves the temporal structure of form, rest, and accumulated evidence. The repository also tracks coverage explicitly: some matches are scored, while others may be skipped if the historical basis is insufficient or a run fails, and both outcomes are written to separate artifacts. Finally, the comparison across three models---PCSP, Elo, and recent-form logistic---is methodologically useful because it distinguishes the value of the full formal-plus-statistical pipeline from simpler rating and online-learning baselines.
+
+\subsection*{Calibration, Coverage, and Comparative Metrics}
+The backtesting outputs distinguish between raw and calibrated probabilities. For each model, the repository records accuracy-style metrics such as accuracy, precision, and recall, but it also records log loss and calibration summaries in \path{metrics.json}. This distinction matters because a forecasting system can classify winners reasonably well while still being poorly calibrated as a probability forecaster. The reported expected calibration error measures how closely forecast bins align with observed win frequencies, while textual calibration summaries provide a more interpretable description of over- or under-confidence. Coverage is reported separately from accuracy because a model that scores only easy cases is not directly comparable to a model that covers the full chronological stream. The result is a more complete evaluation frame: classification quality, probabilistic quality, and match-coverage behavior are treated as different axes of performance rather than collapsed into a single number.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{L{0.24\linewidth}L{0.62\linewidth}}
+\toprule
+Metric family & Interpretation \\
+\midrule
+Accuracy / precision / recall & Whether the model predicts the correct winner under a thresholded decision rule. \\
+Log loss & Whether the forecast assigns high probability to outcomes that actually occur, rewarding confident correctness and penalizing confident error. \\
+Calibration / expected calibration error & Whether predicted probabilities correspond to observed frequencies rather than only ranking quality. \\
+Coverage / skipped-match rate & How often the evaluation pipeline can produce a valid point-in-time prediction across the chronological match stream. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Backtest Outputs as Research Artifacts}
+The backtester writes more than a scalar scoreboard. \path{predictions.csv} supports per-match error analysis, while \path{skipped\_matches.csv} makes coverage gaps auditable rather than silently dropped. \path{model\_metrics.csv} and \path{segmented\_metrics.csv} support model comparison both overall and within subsets such as round, tournament, discipline, or calendar year. \path{calibration.csv} provides the binned data needed to inspect reliability curves, and \path{metrics.json} collects the overall summary, rankings, and calibration diagnostics in a machine-readable form. The human-readable \path{summary.txt} provides a compact narrative of the same run, and \path{feature\_contract.md} captures the inference interface used by the evaluation. Taken together, these outputs make the backtesting directory a reusable research artifact rather than only a one-time console report.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{L{0.26\linewidth}L{0.60\linewidth}}
+\toprule
+Backtest artifact & Analytical use \\
+\midrule
+\path{predictions.csv} & Per-match error analysis, model comparison, and downstream plotting. \\
+\path{skipped\_matches.csv} & Coverage auditing and diagnosis of cold-start or execution failures. \\
+\path{model\_metrics.csv} & Overall cross-model summary metrics in tabular form. \\
+\path{segmented\_metrics.csv} & Performance slicing by round, tournament, discipline, or year. \\
+\path{calibration.csv} & Reliability and probability-calibration diagnostics. \\
+\path{metrics.json} & Machine-readable summary including rankings and expected calibration error. \\
+\path{summary.txt} & Human-readable digest of the same evaluation run. \\
+\path{feature\_contract.md} & Frozen feature interface for reproducibility and future model replacement. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection*{Cold-Start Handling and Leakage Control}
 Leakage control is one of the most important research-facing strengths of the repository and should be read as a first-class design choice rather than an implementation detail. In backtesting mode, \texttt{TimeMachineBacktester} creates point-in-time snapshot adapters so that each match is scored using only information available before the match cutoff. Historical statistics are computed strictly from pre-cutoff matches, and influence weights are fit from pre-match player-history snapshots rather than same-match labels. This sharply reduces temporal leakage in both player-level features and weight estimation.
 
 The codebase also distinguishes between production prediction and evaluation-oriented cold-start handling. The normal prediction path is comparatively strict: if there is no meaningful historical basis for a player, the system raises a failure rather than silently fabricating a profile. In contrast, the backtester can optionally enable cold-start fallback so that chronological evaluation can proceed on sparse early-history cases. This distinction is methodologically sensible because it preserves the honesty of live prediction while still allowing a realistic walk-forward evaluation protocol.
 
+For engineering efficiency, the backtester also distinguishes between a \texttt{fast\_mock} path and persisted per-match formal artifacts. In \texttt{fast\_mock} mode, the evaluation loop can use the deterministic mock scorer directly from template context without materializing a full PAT artifact directory for every match. When \texttt{persist\_match\_artifacts} is enabled, however, the backtester writes per-match \path{matchup.pcsp} and PAT outputs under the run directory, which is useful for deep inspection of specific cases. This is a sensible separation between high-throughput experimentation and artifact-heavy forensic analysis.
+
 \subsection*{Feature Contract for Inference and Evaluation}
 The file \path{coach/backtest/feature\_contract.py} turns the system's implicit feature assumptions into an explicit inference contract. It enumerates template-context outputs, player-level features, weight features, source tables, raw columns, and the computation used to derive each field. This is unusually valuable for a repository of this size. It means the model is not only implemented, but also documented in a machine-readable and human-readable form that can support auditing, future model replacement, and downstream reproducibility.
+
+The evaluation tooling is complemented by a dedicated CLI surface in \path{coach/backtest/cli.py}, which separates contract export, dataset ingestion, and chronological evaluation into distinct commands. This separation is helpful both conceptually and practically: the feature contract can be frozen independently, the historical dataset can be rebuilt when needed, and the evaluator can then be rerun under controlled conditions.
+
+\begin{lstlisting}[style=code,language=bash,caption={Backtesting CLI surface exposed in \texttt{coach/backtest/cli.py}.}]
+coach-backtest contract
+coach-backtest ingest
+coach-backtest run --mode mock
+\end{lstlisting}
 
 Validation is robust throughout the repository. The automated suite covers ETL enrichment, PAT parsing, PAT error signaling, model rendering, parameter constraints, end-to-end mock prediction and strategy behavior, service-level optimization logic, and time-machine backtesting. In the analyzed environment, all 66 tests passed. The support files \path{pyproject.toml}, \path{requirements.txt}, \path{pytest.ini}, \path{.ruff.toml}, \path{Makefile}, \path{.env.example}, and \path{.github/workflows/ci.yml} collectively define installation, linting, testing, PAT configuration, and CI behavior on Python 3.11 and 3.12. The repository also includes \path{README.md} and a shorter project summary in \path{REPORT.md}; the present document is a fuller academic reconstruction of the same implementation.
 
